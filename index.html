@@ -1,18 +1,19 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Artist Opportunities — Review</title>
-<link rel="stylesheet" href="style.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Artist Residency DB</title>
+  <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
-  <!-- Login screen: shown until a token is present. No secret is baked into
-       this page — the Turso URL alone grants no access. -->
+  <!-- Login screen: shown until a Turso auth token is present. The local app
+       has no auth (it's local-only); this is the one structural addition
+       the static deployment needs. No secret is baked into this page. -->
   <div id="login-screen" class="login-screen">
     <form id="login-form" class="login-form">
-      <h1>Artist Opportunities</h1>
+      <h1>Artist Residency DB</h1>
       <p class="login-hint">Paste your Turso database auth token to connect.</p>
       <input id="login-token" type="password" autocomplete="current-password"
              placeholder="Turso auth token" required>
@@ -21,27 +22,20 @@
     </form>
   </div>
 
-  <!-- Main app: hidden until connected -->
-  <div id="app" class="app" hidden>
-    <header class="app-header">
-      <h1>Artist Opportunities</h1>
-      <div id="stats" class="stats"></div>
-      <button id="logout-btn" class="logout-btn">Log out</button>
-    </header>
-
-    <nav class="tabs" id="tabs">
-      <button class="tab-btn active" data-tab="opportunities">Opportunities</button>
-      <button class="tab-btn" data-tab="cloud-jobs">Cloud Jobs</button>
-      <button class="tab-btn" data-tab="run-history">Run History</button>
-      <button class="tab-btn" data-tab="aggregator-candidates">Aggregator Candidates</button>
-      <button class="tab-btn" data-tab="excluded-domains">Excluded Domains</button>
+  <div id="app" hidden>
+  <header>
+    <h1>Artist Residency DB</h1>
+    <div id="stats-bar">Loading...</div>
+    <nav id="main-nav">
+      <button id="nav-list" class="active">Opportunities</button>
+      <button id="nav-researcher">Researcher</button>
     </nav>
-
-    <!-- ── Opportunities tab ──────────────────────────────────────────── -->
-    <section class="tab-panel" id="tab-opportunities">
-      <section class="filters" id="filters">
-        <div class="filter-field">
-          <label for="f-tier">Tier</label>
+    <button id="logout-btn" class="logout-btn">Log out</button>
+  </header>
+  <main>
+    <section id="list-view">
+      <div id="filter-bar">
+        <label>Tier
           <select id="f-tier">
             <option value="">All tiers</option>
             <option value="1">Tier 1</option>
@@ -49,64 +43,49 @@
             <option value="3">Tier 3</option>
             <option value="4">Tier 4</option>
           </select>
-        </div>
-        <div class="filter-field">
-          <label for="f-scope">Scope</label>
+        </label>
+        <label>Scope
           <select id="f-scope">
             <option value="">All scopes</option>
             <option value="in_scope">In scope</option>
             <option value="borderline">Borderline</option>
             <option value="out_of_scope">Out of scope</option>
           </select>
-        </div>
-        <div class="filter-field">
-          <label for="f-status">Status</label>
-          <select id="f-status">
-            <option value="all">All</option>
-            <option value="active" selected>Active</option>
-            <option value="expired">Expired</option>
-            <option value="archived">Archived</option>
-            <option value="suspicious">Suspicious</option>
-          </select>
-        </div>
-        <div class="filter-field">
-          <label for="f-eligibility">Eligibility</label>
+        </label>
+        <label>Eligibility
           <select id="f-eligibility">
-            <option value="not_ineligible" selected>Not ineligible</option>
+            <option value="not_ineligible">Not ineligible</option>
             <option value="eligible">Eligible only</option>
             <option value="all">All</option>
           </select>
-        </div>
-        <div class="filter-field">
-          <label for="f-country">Country</label>
-          <input id="f-country" type="text" placeholder="DE, _EU, _EUR, or name">
-        </div>
-        <div class="filter-field">
-          <label for="f-dl-before">Deadline before</label>
+        </label>
+        <label>Country
+          <input id="f-country" type="text" placeholder="Germany">
+        </label>
+        <label>Deadline to
           <input id="f-dl-before" type="date">
-        </div>
-        <div class="filter-field">
-          <label for="f-app-fee">App. fee</label>
+        </label>
+        <label>App fee
           <select id="f-app-fee">
             <option value="">All</option>
             <option value="none">No fee</option>
             <option value="has">Has fee</option>
           </select>
-        </div>
-        <div class="filter-field">
-          <label for="f-cost">Cost</label>
+        </label>
+        <label>Has cost
           <select id="f-cost">
             <option value="">All</option>
             <option value="none">Free</option>
             <option value="has">Has cost</option>
           </select>
-        </div>
-        <div class="filter-field">
-          <label for="f-max-cost">Max cost</label>
+        </label>
+        <label>Max cost €
           <input id="f-max-cost" type="number" min="0" placeholder="e.g. 500">
-        </div>
-        <div class="filter-field">
-          <label for="f-opp-class">Class</label>
+        </label>
+        <label>Search
+          <input id="f-search" type="text" placeholder="title or institution">
+        </label>
+        <label>Class
           <select id="f-opp-class">
             <option value="">All classes</option>
             <option value="residency">Residency</option>
@@ -114,161 +93,194 @@
             <option value="project_call">Project call</option>
             <option value="other">Other</option>
           </select>
-        </div>
-        <div class="filter-field">
-          <label for="f-flagged">Flagged</label>
+        </label>
+        <label>Flagged
           <select id="f-flagged">
             <option value="">All</option>
             <option value="only">Flagged only</option>
             <option value="hide">Hide flagged</option>
           </select>
-        </div>
-        <div class="filter-field">
-          <label for="f-mismatch">Mismatch</label>
+        </label>
+        <label>Mismatch
           <select id="f-mismatch">
             <option value="">All</option>
             <option value="only">Mismatch only</option>
             <option value="hide">Hide mismatch</option>
           </select>
+        </label>
+        <label>Language
+          <select id="f-source-language">
+            <option value="">All languages</option>
+          </select>
+        </label>
+        <label>Source
+          <select id="f-source">
+            <option value="">All sources</option>
+            <optgroup label="Aggregators">
+              <option value="agg:all">All aggregators</option>
+              <option value="agg:Res Artis">Res Artis</option>
+              <option value="agg:TransArtists">TransArtists</option>
+            </optgroup>
+            <optgroup label="Researcher">
+              <option value="res:all">All researcher modes</option>
+              <option value="res:oriented_search">Oriented search</option>
+              <option value="res:independent">Independent</option>
+              <option value="res:relevance_guided">Relevance guided</option>
+              <option value="res:relevance_blind">Relevance blind</option>
+              <option value="res:known_sources">Known sources</option>
+            </optgroup>
+          </select>
+        </label>
+        <div class="filter-buttons">
+          <button id="btn-apply">Apply</button>
+          <button id="btn-reset">Reset</button>
         </div>
-        <div class="filter-field">
-          <label for="f-source-language">Source lang.</label>
-          <input id="f-source-language" type="text" placeholder="en, de, ...">
+      </div>
+      <div id="result-info-bar">
+        <div id="result-info"></div>
+        <div class="result-info-controls">
+          <label class="inline-check" title="Show a second line per row with LLM evidence (tier note, competitiveness, ambiguities)">
+            <input type="checkbox" id="f-llm-output"> LLM output
+          </label>
+          <label class="inline-check" title="Group rows by institution">
+            <input type="checkbox" id="f-group"> Group institutions
+          </label>
+          <label class="inline-check" title="Within a group, cluster near-duplicate calls (same call, different deadline/price tier)">
+            <input type="checkbox" id="f-group-similar"> Group similar
+          </label>
+          <button id="btn-columns">Columns ▾</button>
+          <div id="col-picker-panel" class="col-picker-panel hidden"></div>
         </div>
-        <div class="filter-field">
-          <label for="f-source">Source</label>
-          <input id="f-source" type="text" placeholder="agg:Name or res:mode">
-        </div>
-        <div class="filter-field filter-field-wide">
-          <label for="f-search">Search</label>
-          <input id="f-search" type="text" placeholder="title or institution">
-        </div>
-        <div class="filter-field filter-checkbox-field">
-          <label><input type="checkbox" id="f-group"> Group institutions</label>
-        </div>
-        <div class="filter-field filter-checkbox-field">
-          <label><input type="checkbox" id="f-group-similar"> Group similar</label>
-        </div>
-        <div class="filter-field">
-          <button id="f-apply" type="button">Apply filters</button>
-        </div>
-      </section>
-
-      <section class="list-section">
-        <table id="opp-table" class="opp-table">
+      </div>
+      <div id="table-wrap">
+        <table id="opp-table">
           <thead>
             <tr>
-              <th data-sort="tier">Tier</th>
-              <th data-sort="title">Title</th>
-              <th data-sort="institution">Institution</th>
-              <th data-sort="country">Country</th>
-              <th data-sort="deadline">Deadline</th>
-              <th data-sort="duration">Duration</th>
-              <th data-sort="stipend">Stipend</th>
-              <th data-sort="cost">Cost</th>
-              <th data-sort="recurring">Recurring</th>
-              <th data-sort="eligibility">Eligibility</th>
-              <th data-sort="status">Status</th>
+              <th>Tier</th>
+              <th>Title</th>
+              <th>Institution</th>
+              <th>Country</th>
+              <th>Deadline</th>
+              <th>Eligibility</th>
+              <th>Quality</th>
+              <th>Scope</th>
             </tr>
           </thead>
           <tbody id="opp-tbody"></tbody>
         </table>
-        <div id="pagination" class="pagination"></div>
-      </section>
+      </div>
+      <div id="table-scroll-mirror"><div id="table-scroll-mirror-inner"></div></div>
+      <div id="pagination"></div>
     </section>
 
-    <!-- ── Cloud Jobs tab ─────────────────────────────────────────────── -->
-    <section class="tab-panel hidden" id="tab-cloud-jobs">
-      <h2>Request a cloud run</h2>
-      <p class="tab-hint">Inserts a row into <code>command_queue</code>. The next time
-        <code>scripts/cloud_run.py</code> runs (its scheduled cron tick, or sooner if a
-        frequent polling routine is also registered — see docs/CLOUD_ROUTINE.md), it claims
-        and executes the oldest pending row instead of its default cycle.</p>
-      <form id="job-form" class="job-form">
-        <label>Command
-          <select id="job-command">
-            <option value="run_researcher">run_researcher — scrape + one researcher mode + extract</option>
-            <option value="run_scrape">run_scrape — scrape only</option>
-            <option value="run_pipeline">run_pipeline — extract pending raw_scrape rows only</option>
-          </select>
+    <section id="detail-view" class="hidden">
+      <div class="detail-nav-bar">
+        <button id="btn-back">Back to list</button>
+        <button id="btn-prev-opp" disabled>← Prev</button>
+        <span id="detail-nav-pos"></span>
+        <button id="btn-next-opp" disabled>Next →</button>
+        <label class="inline-check nav-llm-label">
+          <input type="checkbox" id="nav-llm-output">
+          LLM output
         </label>
-        <label id="job-mode-field">Mode
-          <select id="job-mode">
-            <option value="known_sources">known_sources</option>
-            <option value="oriented_search" selected>oriented_search</option>
-            <option value="independent">independent</option>
-            <option value="relevance_guided">relevance_guided</option>
-            <option value="relevance_blind">relevance_blind</option>
-            <option value="social">social</option>
-          </select>
+        <label class="inline-check nav-llm-label" title="Make the extracted fields below editable and save changes back to the database">
+          <input type="checkbox" id="nav-edit-fields">
+          Edit fields
         </label>
-        <label id="job-limit-field">Limit
-          <input id="job-limit" type="number" min="1" value="5">
-        </label>
-        <label id="job-full-scrape-field"><input type="checkbox" id="job-full-scrape"> Full scrape</label>
-        <button type="submit">Enqueue</button>
-        <span id="job-submit-status"></span>
-      </form>
-
-      <h2>Queue</h2>
-      <button id="job-refresh" class="btn-secondary" type="button">Refresh</button>
-      <table class="admin-table">
-        <thead><tr><th>ID</th><th>Command</th><th>Args</th><th>Status</th><th>Requested</th><th>Finished</th><th>Result</th></tr></thead>
-        <tbody id="job-queue-tbody"></tbody>
-      </table>
+      </div>
+      <div id="detail-inner"></div>
     </section>
 
-    <!-- ── Run History tab ────────────────────────────────────────────── -->
-    <section class="tab-panel hidden" id="tab-run-history">
-      <h2>Pipeline runs</h2>
-      <button id="runs-refresh" class="btn-secondary" type="button">Refresh</button>
-      <table class="admin-table">
-        <thead><tr><th>ID</th><th>Status</th><th>Mode</th><th>Triggered by</th><th>New opps</th><th>API req</th><th>Tokens in/out</th><th>Started</th><th>Finished</th></tr></thead>
-        <tbody id="runs-tbody"></tbody>
-      </table>
+    <section id="researcher-view" class="hidden">
+      <button id="btn-back-researcher" class="btn-secondary">Back to list</button>
 
-      <h2>Digests</h2>
-      <button id="digests-refresh" class="btn-secondary" type="button">Refresh</button>
-      <div id="digests-list"></div>
+      <div class="tool-section">
+        <h3 class="tool-section-title">Researcher</h3>
+        <p class="login-hint">This is a static page — it cannot run a search itself. "Run" requests
+          a cycle via <code>command_queue</code>; the cloud routine executes it on its next scheduled
+          tick (see docs/CLOUD_ROUTINE.md). History below is real, already-completed runs.</p>
+        <div id="researcher-controls">
+          <label>Mode
+            <select id="r-mode">
+              <option value="known_sources">known_sources — crawl known sites</option>
+              <option value="oriented_search" selected>oriented_search — search with DB-derived queries</option>
+              <option value="independent">independent — target underrepresented institutions</option>
+              <option value="relevance_guided">relevance_guided — profile-anchored search</option>
+              <option value="relevance_blind">relevance_blind — artist-profile search</option>
+              <option value="social">social — social-media discovery</option>
+            </select>
+          </label>
+          <label>Limit (queries/sources)
+            <input id="r-limit" type="number" min="1" placeholder="leave blank for default">
+          </label>
+          <label><input type="checkbox" id="r-full-scrape"> Full scrape</label>
+          <button id="btn-run-researcher">Request run</button>
+          <button id="btn-toggle-excluded-domains" class="btn-secondary">Excluded Domains</button>
+        </div>
+        <div id="researcher-status"></div>
+        <div id="excl-domains-section" class="tool-section hidden">
+          <h3 class="tool-section-title">Excluded Domains <button class="run-detail-close" id="btn-close-excluded-domains">Close</button></h3>
+          <div style="overflow-x:auto;">
+            <table class="scraper-table" style="width:auto;">
+              <thead>
+                <tr>
+                  <th>Domain</th>
+                  <th class="st-num" title="Times the page was rejected as a structural non-call">Structural rejects</th>
+                  <th class="st-num" title="Times processed without ever yielding an opportunity or aggregator">Total processed</th>
+                  <th>Last rejected</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="excl-domains-table-body">
+                <tr><td colspan="5" style="color:var(--text-muted);font-style:italic;padding:10px;">Loading…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <h4 class="tool-subsection-title">Queue <button class="run-detail-close" id="btn-refresh-queue">Refresh</button></h4>
+        <table class="queue-table">
+          <thead><tr><th>ID</th><th>Command</th><th>Args</th><th>Status</th><th>Requested</th><th>Finished</th><th>Result</th></tr></thead>
+          <tbody id="job-queue-tbody"></tbody>
+        </table>
+        <h4 class="tool-subsection-title">Past researcher runs</h4>
+        <div id="researcher-runs"></div>
+        <div id="run-detail" class="run-detail hidden"></div>
+      </div>
+
+      <div class="tool-section">
+        <h3 class="tool-section-title">Pipeline <span id="pipeline-badge" class="pipeline-badge"></span></h3>
+        <div class="tool-controls">
+          <button id="btn-run-pipeline">Request run</button>
+        </div>
+        <h4 class="tool-subsection-title">Pipeline runs <button class="run-detail-close" id="btn-refresh-pipeline-runs">Refresh</button></h4>
+        <div id="pipeline-runs" style="margin-top:12px"></div>
+      </div>
+
+      <div class="tool-section">
+        <h3 class="tool-section-title">Aggregator Scrapers</h3>
+        <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:10px;">
+          <button class="btn-scrape btn-scrape-all" id="btn-request-scrape">Request scrape</button>
+          <button class="btn-secondary" id="btn-refresh-scrapers" style="margin-left:auto;">Refresh</button>
+        </div>
+        <h4 class="tool-subsection-title">Candidates <span id="agg-cand-badge" class="pipeline-badge" title="Aggregator candidates awaiting review"></span></h4>
+        <div style="overflow-x:auto;">
+          <table class="scraper-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Evidence</th>
+                <th>First detected</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="agg-candidates-table-body">
+              <tr><td colspan="4" style="color:var(--text-muted);font-style:italic;padding:10px;">Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
     </section>
-
-    <!-- ── Aggregator Candidates tab ──────────────────────────────────── -->
-    <section class="tab-panel hidden" id="tab-aggregator-candidates">
-      <h2>Aggregator candidates</h2>
-      <p class="tab-hint">Sources the researcher flagged as likely listing/aggregator pages, awaiting confirm/reject.</p>
-      <button id="agg-refresh" class="btn-secondary" type="button">Refresh</button>
-      <table class="admin-table">
-        <thead><tr><th>URL</th><th>Name</th><th>Signals</th><th>Detected</th><th>Actions</th></tr></thead>
-        <tbody id="agg-tbody"></tbody>
-      </table>
-    </section>
-
-    <!-- ── Excluded Domains tab ───────────────────────────────────────── -->
-    <section class="tab-panel hidden" id="tab-excluded-domains">
-      <h2>Excluded domains</h2>
-      <p class="tab-hint">Domains the researcher learned to stop searching (repeated structural non-call rejections, never a real find). Restore if this was a false positive.</p>
-      <button id="dom-refresh" class="btn-secondary" type="button">Refresh</button>
-      <table class="admin-table">
-        <thead><tr><th>Domain</th><th>Structural rejects</th><th>Total processed</th><th>Last rejected</th><th>Reason</th><th>Actions</th></tr></thead>
-        <tbody id="dom-tbody"></tbody>
-      </table>
-    </section>
-  </div>
-
-  <!-- Opportunity detail panel: slides over the list when a row is opened -->
-  <div id="detail-panel" class="detail-panel" hidden>
-    <div class="detail-panel-inner">
-      <button id="detail-close" class="detail-close">&times; Close</button>
-      <div id="detail-content"></div>
-    </div>
-  </div>
-
-  <!-- Institution detail panel -->
-  <div id="institution-panel" class="detail-panel" hidden>
-    <div class="detail-panel-inner">
-      <button id="institution-close" class="detail-close">&times; Close</button>
-      <div id="institution-content"></div>
-    </div>
+  </main>
   </div>
 
   <script type="module" src="app.js"></script>
