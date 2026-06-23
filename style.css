@@ -1,0 +1,250 @@
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  margin: 0;
+  background: #f7f7f5;
+  color: #1a1a1a;
+}
+
+/* Login */
+.login-screen {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+}
+.login-form {
+  background: #fff;
+  padding: 2rem;
+  border-radius: 8px;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+  width: 320px;
+}
+.login-form h1 { margin-top: 0; font-size: 1.3rem; }
+.login-hint { color: #666; font-size: 0.9rem; }
+.login-form input {
+  width: 100%;
+  padding: 0.6rem;
+  margin: 0.5rem 0 1rem;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+}
+.login-form button {
+  width: 100%;
+  padding: 0.6rem;
+  background: #2a5d9f;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.login-error { color: #b3261e; font-size: 0.85rem; }
+
+/* App shell */
+.app { padding: 1rem 1.5rem; }
+.app-header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+.app-header h1 { font-size: 1.2rem; margin: 0; }
+.stats { color: #555; font-size: 0.9rem; flex: 1; }
+.logout-btn {
+  padding: 0.4rem 0.8rem;
+  border: 1px solid #ccc;
+  background: #fff;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+/* Filters */
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  background: #fff;
+  padding: 0.75rem;
+  border-radius: 6px;
+  margin-bottom: 1rem;
+}
+.filter-field { display: flex; flex-direction: column; font-size: 0.8rem; }
+.filter-field-wide { flex: 1; min-width: 200px; }
+.filter-field label { color: #555; margin-bottom: 0.2rem; }
+.filter-field select, .filter-field input {
+  padding: 0.35rem;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+}
+#f-apply {
+  align-self: flex-end;
+  padding: 0.4rem 1rem;
+  background: #2a5d9f;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+/* Table */
+.opp-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: #fff;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.opp-table th, .opp-table td {
+  padding: 0.5rem 0.6rem;
+  text-align: left;
+  border-bottom: 1px solid #eee;
+  font-size: 0.88rem;
+}
+.opp-table th { cursor: pointer; background: #f0f0ee; user-select: none; }
+.opp-row:hover { background: #f5f8ff; cursor: pointer; }
+
+.pagination { margin-top: 0.75rem; display: flex; align-items: center; gap: 0.5rem; }
+.pagination button {
+  padding: 0.3rem 0.7rem;
+  border: 1px solid #ccc;
+  background: #fff;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.pagination button:disabled { opacity: 0.4; cursor: default; }
+
+/* Detail panel */
+.detail-panel {
+  position: fixed;
+  top: 0; right: 0;
+  width: min(480px, 100vw);
+  height: 100vh;
+  background: #fff;
+  box-shadow: -4px 0 16px rgba(0,0,0,0.15);
+  overflow-y: auto;
+  z-index: 10;
+}
+.detail-panel-inner { padding: 1.25rem; }
+.detail-close {
+  background: none;
+  border: none;
+  font-size: 1rem;
+  cursor: pointer;
+  margin-bottom: 0.5rem;
+}
+#detail-form { display: flex; flex-direction: column; gap: 0.6rem; margin-top: 0.5rem; }
+#detail-form label { display: flex; flex-direction: column; font-size: 0.85rem; color: #444; gap: 0.2rem; }
+#detail-form select, #detail-form input, #detail-form textarea {
+  padding: 0.4rem;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font: inherit;
+}
+#detail-form button {
+  align-self: flex-start;
+  padding: 0.4rem 1rem;
+  background: #2a5d9f;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+#d-save-status { font-size: 0.85rem; color: #2a7d2a; margin-left: 0.5rem; }
+
+.link-button {
+  background: none; border: none; padding: 0; cursor: pointer;
+  color: #2a5d9f; font-weight: bold; font-size: inherit; text-decoration: underline;
+}
+
+.banner {
+  padding: 0.5rem 0.75rem; border-radius: 4px; margin: 0.5rem 0;
+  display: flex; align-items: center; justify-content: space-between; font-size: 0.85rem;
+}
+.banner-flag { background: #fde8e8; color: #8a2222; }
+.banner-mismatch { background: #fff4d6; color: #7a5d00; }
+.banner button {
+  padding: 0.25rem 0.6rem; border: 1px solid currentColor; background: none;
+  border-radius: 4px; cursor: pointer; font-size: 0.8rem;
+}
+
+.field-edit-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;
+  margin-top: 0.75rem; padding: 0.75rem; background: #f7f7f5; border-radius: 6px;
+}
+.field-edit-cell { display: flex; flex-direction: column; font-size: 0.78rem; }
+.field-edit-cell b { color: #555; margin-bottom: 0.15rem; }
+.field-edit-input { padding: 0.3rem; border: 1px solid #ccc; border-radius: 4px; font: inherit; }
+.field-edit-textarea { resize: vertical; }
+.field-edit-actions { grid-column: 1 / -1; margin-top: 0.5rem; }
+.field-edit-actions button {
+  padding: 0.4rem 1rem; background: #2a5d9f; color: #fff; border: none; border-radius: 4px; cursor: pointer;
+}
+#d-edit-status { margin-left: 0.5rem; font-size: 0.85rem; color: #2a7d2a; }
+
+#d-toggle-edit, #d-toggle-llm {
+  padding: 0.4rem 0.8rem; border: 1px solid #ccc; background: #fff; border-radius: 4px;
+  cursor: pointer; margin-right: 0.5rem; margin-top: 0.5rem;
+}
+
+.llm-output {
+  margin-top: 0.75rem; padding: 0.75rem; background: #1e1e1e; color: #d4d4d4;
+  border-radius: 6px; overflow-x: auto; font-size: 0.75rem; max-height: 300px;
+}
+
+/* Tabs */
+.tabs { display: flex; gap: 0.25rem; margin-bottom: 1rem; border-bottom: 1px solid #ddd; }
+.tab-btn {
+  padding: 0.5rem 1rem; border: none; background: none; cursor: pointer;
+  font-size: 0.9rem; color: #555; border-bottom: 2px solid transparent;
+}
+.tab-btn.active { color: #2a5d9f; border-bottom-color: #2a5d9f; font-weight: bold; }
+.tab-panel.hidden { display: none; }
+.tab-hint { color: #666; font-size: 0.85rem; max-width: 700px; }
+
+/* Admin tables (Cloud Jobs / Run History / Aggregator Candidates / Excluded Domains) */
+.admin-table {
+  width: 100%; border-collapse: collapse; background: #fff; border-radius: 6px;
+  overflow: hidden; margin-top: 0.5rem;
+}
+.admin-table th, .admin-table td {
+  padding: 0.45rem 0.6rem; text-align: left; border-bottom: 1px solid #eee; font-size: 0.82rem;
+  max-width: 260px; overflow-wrap: anywhere;
+}
+.admin-table th { background: #f0f0ee; }
+.admin-table button {
+  padding: 0.25rem 0.6rem; border: 1px solid #ccc; background: #fff; border-radius: 4px;
+  cursor: pointer; font-size: 0.78rem; margin-right: 0.3rem;
+}
+.btn-secondary {
+  padding: 0.35rem 0.8rem; border: 1px solid #ccc; background: #fff; border-radius: 4px;
+  cursor: pointer; margin-bottom: 0.5rem;
+}
+
+/* Cloud Jobs form */
+.job-form {
+  display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: flex-end;
+  background: #fff; padding: 0.75rem; border-radius: 6px; margin-bottom: 1rem;
+}
+.job-form label { display: flex; flex-direction: column; font-size: 0.8rem; color: #555; }
+.job-form select, .job-form input { padding: 0.35rem; border: 1px solid #ccc; border-radius: 4px; }
+.job-form button {
+  padding: 0.4rem 1rem; background: #2a5d9f; color: #fff; border: none; border-radius: 4px; cursor: pointer;
+}
+#job-submit-status { font-size: 0.85rem; color: #2a7d2a; }
+
+/* Digests */
+.digest-entry { margin: 0.5rem 0; background: #fff; border-radius: 6px; padding: 0.5rem 0.75rem; }
+.digest-entry summary { cursor: pointer; font-size: 0.85rem; }
+.digest-markdown {
+  white-space: pre-wrap; font-size: 0.8rem; background: #f7f7f5; padding: 0.5rem;
+  border-radius: 4px; margin-top: 0.5rem; max-height: 400px; overflow-y: auto;
+}
+
+/* Grouping */
+.group-header-row td { background: #eef2f8; font-size: 0.85rem; padding: 0.4rem 0.6rem; }
+.group-count { color: #777; }
+
+/* Filter checkboxes */
+.filter-checkbox-field { flex-direction: row !important; align-items: center; gap: 0.3rem; }
+.filter-checkbox-field label { display: flex; align-items: center; gap: 0.3rem; color: #444; }

@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Artist Opportunities — Review</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- Login screen: shown until a token is present. No secret is baked into
+       this page — the Turso URL alone grants no access. -->
+  <div id="login-screen" class="login-screen">
+    <form id="login-form" class="login-form">
+      <h1>Artist Opportunities</h1>
+      <p class="login-hint">Paste your Turso database auth token to connect.</p>
+      <input id="login-token" type="password" autocomplete="current-password"
+             placeholder="Turso auth token" required>
+      <button type="submit">Connect</button>
+      <p id="login-error" class="login-error" hidden></p>
+    </form>
+  </div>
+
+  <!-- Main app: hidden until connected -->
+  <div id="app" class="app" hidden>
+    <header class="app-header">
+      <h1>Artist Opportunities</h1>
+      <div id="stats" class="stats"></div>
+      <button id="logout-btn" class="logout-btn">Log out</button>
+    </header>
+
+    <nav class="tabs" id="tabs">
+      <button class="tab-btn active" data-tab="opportunities">Opportunities</button>
+      <button class="tab-btn" data-tab="cloud-jobs">Cloud Jobs</button>
+      <button class="tab-btn" data-tab="run-history">Run History</button>
+      <button class="tab-btn" data-tab="aggregator-candidates">Aggregator Candidates</button>
+      <button class="tab-btn" data-tab="excluded-domains">Excluded Domains</button>
+    </nav>
+
+    <!-- ── Opportunities tab ──────────────────────────────────────────── -->
+    <section class="tab-panel" id="tab-opportunities">
+      <section class="filters" id="filters">
+        <div class="filter-field">
+          <label for="f-tier">Tier</label>
+          <select id="f-tier">
+            <option value="">All tiers</option>
+            <option value="1">Tier 1</option>
+            <option value="2">Tier 2</option>
+            <option value="3">Tier 3</option>
+            <option value="4">Tier 4</option>
+          </select>
+        </div>
+        <div class="filter-field">
+          <label for="f-scope">Scope</label>
+          <select id="f-scope">
+            <option value="">All scopes</option>
+            <option value="in_scope">In scope</option>
+            <option value="borderline">Borderline</option>
+            <option value="out_of_scope">Out of scope</option>
+          </select>
+        </div>
+        <div class="filter-field">
+          <label for="f-status">Status</label>
+          <select id="f-status">
+            <option value="all">All</option>
+            <option value="active" selected>Active</option>
+            <option value="expired">Expired</option>
+            <option value="archived">Archived</option>
+            <option value="suspicious">Suspicious</option>
+          </select>
+        </div>
+        <div class="filter-field">
+          <label for="f-eligibility">Eligibility</label>
+          <select id="f-eligibility">
+            <option value="not_ineligible" selected>Not ineligible</option>
+            <option value="eligible">Eligible only</option>
+            <option value="all">All</option>
+          </select>
+        </div>
+        <div class="filter-field">
+          <label for="f-country">Country</label>
+          <input id="f-country" type="text" placeholder="DE, _EU, _EUR, or name">
+        </div>
+        <div class="filter-field">
+          <label for="f-dl-before">Deadline before</label>
+          <input id="f-dl-before" type="date">
+        </div>
+        <div class="filter-field">
+          <label for="f-app-fee">App. fee</label>
+          <select id="f-app-fee">
+            <option value="">All</option>
+            <option value="none">No fee</option>
+            <option value="has">Has fee</option>
+          </select>
+        </div>
+        <div class="filter-field">
+          <label for="f-cost">Cost</label>
+          <select id="f-cost">
+            <option value="">All</option>
+            <option value="none">Free</option>
+            <option value="has">Has cost</option>
+          </select>
+        </div>
+        <div class="filter-field">
+          <label for="f-max-cost">Max cost</label>
+          <input id="f-max-cost" type="number" min="0" placeholder="e.g. 500">
+        </div>
+        <div class="filter-field">
+          <label for="f-opp-class">Class</label>
+          <select id="f-opp-class">
+            <option value="">All classes</option>
+            <option value="residency">Residency</option>
+            <option value="funding">Funding</option>
+            <option value="project_call">Project call</option>
+            <option value="other">Other</option>
+          </select>
+        </div>
+        <div class="filter-field">
+          <label for="f-flagged">Flagged</label>
+          <select id="f-flagged">
+            <option value="">All</option>
+            <option value="only">Flagged only</option>
+            <option value="hide">Hide flagged</option>
+          </select>
+        </div>
+        <div class="filter-field">
+          <label for="f-mismatch">Mismatch</label>
+          <select id="f-mismatch">
+            <option value="">All</option>
+            <option value="only">Mismatch only</option>
+            <option value="hide">Hide mismatch</option>
+          </select>
+        </div>
+        <div class="filter-field">
+          <label for="f-source-language">Source lang.</label>
+          <input id="f-source-language" type="text" placeholder="en, de, ...">
+        </div>
+        <div class="filter-field">
+          <label for="f-source">Source</label>
+          <input id="f-source" type="text" placeholder="agg:Name or res:mode">
+        </div>
+        <div class="filter-field filter-field-wide">
+          <label for="f-search">Search</label>
+          <input id="f-search" type="text" placeholder="title or institution">
+        </div>
+        <div class="filter-field filter-checkbox-field">
+          <label><input type="checkbox" id="f-group"> Group institutions</label>
+        </div>
+        <div class="filter-field filter-checkbox-field">
+          <label><input type="checkbox" id="f-group-similar"> Group similar</label>
+        </div>
+        <div class="filter-field">
+          <button id="f-apply" type="button">Apply filters</button>
+        </div>
+      </section>
+
+      <section class="list-section">
+        <table id="opp-table" class="opp-table">
+          <thead>
+            <tr>
+              <th data-sort="tier">Tier</th>
+              <th data-sort="title">Title</th>
+              <th data-sort="institution">Institution</th>
+              <th data-sort="country">Country</th>
+              <th data-sort="deadline">Deadline</th>
+              <th data-sort="duration">Duration</th>
+              <th data-sort="stipend">Stipend</th>
+              <th data-sort="cost">Cost</th>
+              <th data-sort="recurring">Recurring</th>
+              <th data-sort="eligibility">Eligibility</th>
+              <th data-sort="status">Status</th>
+            </tr>
+          </thead>
+          <tbody id="opp-tbody"></tbody>
+        </table>
+        <div id="pagination" class="pagination"></div>
+      </section>
+    </section>
+
+    <!-- ── Cloud Jobs tab ─────────────────────────────────────────────── -->
+    <section class="tab-panel hidden" id="tab-cloud-jobs">
+      <h2>Request a cloud run</h2>
+      <p class="tab-hint">Inserts a row into <code>command_queue</code>. The next time
+        <code>scripts/cloud_run.py</code> runs (its scheduled cron tick, or sooner if a
+        frequent polling routine is also registered — see docs/CLOUD_ROUTINE.md), it claims
+        and executes the oldest pending row instead of its default cycle.</p>
+      <form id="job-form" class="job-form">
+        <label>Command
+          <select id="job-command">
+            <option value="run_researcher">run_researcher — scrape + one researcher mode + extract</option>
+            <option value="run_scrape">run_scrape — scrape only</option>
+            <option value="run_pipeline">run_pipeline — extract pending raw_scrape rows only</option>
+          </select>
+        </label>
+        <label id="job-mode-field">Mode
+          <select id="job-mode">
+            <option value="known_sources">known_sources</option>
+            <option value="oriented_search" selected>oriented_search</option>
+            <option value="independent">independent</option>
+            <option value="relevance_guided">relevance_guided</option>
+            <option value="relevance_blind">relevance_blind</option>
+            <option value="social">social</option>
+          </select>
+        </label>
+        <label id="job-limit-field">Limit
+          <input id="job-limit" type="number" min="1" value="5">
+        </label>
+        <label id="job-full-scrape-field"><input type="checkbox" id="job-full-scrape"> Full scrape</label>
+        <button type="submit">Enqueue</button>
+        <span id="job-submit-status"></span>
+      </form>
+
+      <h2>Queue</h2>
+      <button id="job-refresh" class="btn-secondary" type="button">Refresh</button>
+      <table class="admin-table">
+        <thead><tr><th>ID</th><th>Command</th><th>Args</th><th>Status</th><th>Requested</th><th>Finished</th><th>Result</th></tr></thead>
+        <tbody id="job-queue-tbody"></tbody>
+      </table>
+    </section>
+
+    <!-- ── Run History tab ────────────────────────────────────────────── -->
+    <section class="tab-panel hidden" id="tab-run-history">
+      <h2>Pipeline runs</h2>
+      <button id="runs-refresh" class="btn-secondary" type="button">Refresh</button>
+      <table class="admin-table">
+        <thead><tr><th>ID</th><th>Status</th><th>Mode</th><th>Triggered by</th><th>New opps</th><th>API req</th><th>Tokens in/out</th><th>Started</th><th>Finished</th></tr></thead>
+        <tbody id="runs-tbody"></tbody>
+      </table>
+
+      <h2>Digests</h2>
+      <button id="digests-refresh" class="btn-secondary" type="button">Refresh</button>
+      <div id="digests-list"></div>
+    </section>
+
+    <!-- ── Aggregator Candidates tab ──────────────────────────────────── -->
+    <section class="tab-panel hidden" id="tab-aggregator-candidates">
+      <h2>Aggregator candidates</h2>
+      <p class="tab-hint">Sources the researcher flagged as likely listing/aggregator pages, awaiting confirm/reject.</p>
+      <button id="agg-refresh" class="btn-secondary" type="button">Refresh</button>
+      <table class="admin-table">
+        <thead><tr><th>URL</th><th>Name</th><th>Signals</th><th>Detected</th><th>Actions</th></tr></thead>
+        <tbody id="agg-tbody"></tbody>
+      </table>
+    </section>
+
+    <!-- ── Excluded Domains tab ───────────────────────────────────────── -->
+    <section class="tab-panel hidden" id="tab-excluded-domains">
+      <h2>Excluded domains</h2>
+      <p class="tab-hint">Domains the researcher learned to stop searching (repeated structural non-call rejections, never a real find). Restore if this was a false positive.</p>
+      <button id="dom-refresh" class="btn-secondary" type="button">Refresh</button>
+      <table class="admin-table">
+        <thead><tr><th>Domain</th><th>Structural rejects</th><th>Total processed</th><th>Last rejected</th><th>Reason</th><th>Actions</th></tr></thead>
+        <tbody id="dom-tbody"></tbody>
+      </table>
+    </section>
+  </div>
+
+  <!-- Opportunity detail panel: slides over the list when a row is opened -->
+  <div id="detail-panel" class="detail-panel" hidden>
+    <div class="detail-panel-inner">
+      <button id="detail-close" class="detail-close">&times; Close</button>
+      <div id="detail-content"></div>
+    </div>
+  </div>
+
+  <!-- Institution detail panel -->
+  <div id="institution-panel" class="detail-panel" hidden>
+    <div class="detail-panel-inner">
+      <button id="institution-close" class="detail-close">&times; Close</button>
+      <div id="institution-content"></div>
+    </div>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
