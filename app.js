@@ -2715,7 +2715,7 @@ async function loadPipelineStatus() {
       q(`SELECT COUNT(DISTINCT rs.url) AS extracted FROM raw_scrape rs
          WHERE rs.processed = 1 AND rs.error IS NULL
            AND EXISTS (SELECT 1 FROM opportunities o WHERE o.url = rs.url)`),
-    ].map(p => p.then(rows => [rows])));
+    ]);
     const scopeRows = await q("SELECT COALESCE(scope, 'unknown') AS scope, COUNT(*) AS n FROM opportunities GROUP BY 1");
     const opportunitiesByScope = {};
     for (const r of scopeRows) opportunitiesByScope[r.scope] = r.n;
@@ -2833,22 +2833,67 @@ async function loadPipelineStatus() {
 // ── Scraper table / runs (per-source status — read-only here; "Run"
 // buttons are disabled in HTML, no live execution exists) ─────────────────
 
+// Mirrors web/app.py's _SCRAPER_REGISTRY — custom scrapers aren't flagged by
+// any sources column, the registry (key -> sources.name) is Python-side, so
+// it's duplicated here since webapp/ can't import web/app.py.
+const _SCRAPER_REGISTRY = {
+  resartis: "Res Artis",
+  transartists: "TransArtists",
+  eflux: "e-flux Announcements",
+  touring_artists_info: "touring artists — Residenzen",
+  kunstfonds: "Stiftung Kunstfonds",
+  igbk: "IGBK — Internationale Gesellschaft der Bildenden Künste",
+  igbildendekunst: "IG Bildende Kunst",
+};
+
 async function loadScraperTable() {
   const tbody = document.getElementById("scraper-table-body");
   if (!tbody) return;
   try {
-    const rows = await q(`
-      SELECT s.name, s.url, s.scraper_key AS key, s.scraper_type, s.listing_order, s.newest_safe,
-             s.aggregator_status, s.blocked, s.fail_count,
-             (SELECT COUNT(*) FROM raw_scrape rs WHERE rs.source_id = s.id) AS scrape_count,
-             (SELECT MAX(rs.scraped_at) FROM raw_scrape rs WHERE rs.source_id = s.id) AS last_run,
-             (SELECT rs.scrape_mode FROM raw_scrape rs WHERE rs.source_id = s.id ORDER BY rs.scraped_at DESC LIMIT 1) AS last_mode,
-             (SELECT COUNT(*) FROM raw_scrape rs WHERE rs.source_id = s.id
-                AND rs.scraped_at = (SELECT MAX(rs2.scraped_at) FROM raw_scrape rs2 WHERE rs2.source_id = s.id)) AS last_fetched
-      FROM sources s
-      WHERE s.scraper_key IS NOT NULL OR s.scraper_type = 'generic'
-      ORDER BY s.name
-    `);
+    const sourceRows = await q(
+      "SELECT id, name, url, aggregator_status, listing_order, newest_safe, fail_count, blocked FROM sources"
+    );
+    const byName = {};
+    for (const s of sourceRows) byName[s.name] = s;
+
+    const rows = [];
+    for (const [key, dbName] of Object.entries(_SCRAPER_REGISTRY)) {
+      const source = byName[dbName];
+      const lastRunRows = await q(
+        "SELECT finished_at, mode, fetched, status FROM scraper_runs WHERE target=? ORDER BY id DESC LIMIT 1",
+        [key]
+      );
+      const lastRun = lastRunRows[0] || null;
+      const scrapeCount = source
+        ? (await q("SELECT COUNT(*) AS n FROM raw_scrape WHERE source_id=?", [source.id]))[0].n
+        : 0;
+      rows.push({
+        key, name: dbName, url: source ? source.url : null,
+        scraper_type: "custom", scrape_count: scrapeCount,
+        last_run: lastRun ? lastRun.finished_at : null,
+        last_mode: lastRun ? lastRun.mode : null,
+        last_fetched: lastRun ? lastRun.fetched : null,
+        listing_order: source ? source.listing_order : null,
+        newest_safe: source ? !!source.newest_safe : false,
+        fail_count: source ? source.fail_count : 0,
+        blocked: source ? !!source.blocked : false,
+        aggregator_status: source ? source.aggregator_status : "none",
+      });
+    }
+    const knownNames = new Set(Object.values(_SCRAPER_REGISTRY));
+    for (const s of sourceRows) {
+      if (s.aggregator_status !== "confirmed" || knownNames.has(s.name)) continue;
+      const scrapeCount = (await q("SELECT COUNT(*) AS n FROM raw_scrape WHERE source_id=?", [s.id]))[0].n;
+      rows.push({
+        key: null, name: s.name, url: s.url,
+        scraper_type: "generic", scrape_count: scrapeCount,
+        last_run: null, last_mode: null, last_fetched: null,
+        listing_order: s.listing_order, newest_safe: !!s.newest_safe,
+        fail_count: s.fail_count, blocked: !!s.blocked,
+        aggregator_status: "confirmed",
+      });
+    }
+    rows.sort((a, b) => a.name.localeCompare(b.name));
     const modeLabels = { full: "Full", newest: "Newest" };
     const orderLabels = {
       reverse_chronological: "rev. chron.", chronological: "chron.", alphabetical: "alpha.",
@@ -2970,7 +3015,7 @@ async function loadAggregatorCandidatesTable() {
       </tr>`;
     }).join("");
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="4" class="run-err">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="5" class="run-err">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
