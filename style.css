@@ -414,6 +414,7 @@ td .opp-type { font-size: 11px; }
 .tool-controls label.inline-label { flex-direction: row; align-items: center; gap: 6px; }
 #btn-run-pipeline { background: #1d4ed8; color: #fff; }
 #btn-run-pipeline:hover { background: #1e40af; }
+#btn-run-pipeline:disabled { background: #9ca3af; cursor: not-allowed; }
 .btn-secondary { background: #e5e7eb; color: #374151;
                  padding: 6px 16px; border: none; border-radius: 3px; cursor: pointer; font-size: 13px; }
 .btn-secondary:hover { background: #d1d5db; }
