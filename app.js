@@ -1,10 +1,10 @@
 // Literal port of web/static/app.js onto direct Turso access (Phase 7C,
 // redone 2026-06-23 — see DECISIONS.md). Every pure rendering/formatting
 // function below is copied verbatim from the local app; only the
-// data-fetching layer (apiFetch -> q()/exec()) and the operational-trigger
-// functions (which need a live server and can't survive going static) are
-// different — those request work via command_queue instead (see the
-// Researcher/Pipeline/Aggregator sections near the bottom).
+// data-fetching layer (apiFetch -> q()/exec()) is different. Operational
+// triggers (run researcher/pipeline/scrapers) have no live backend to call
+// in a static deployment, so those controls are disabled in the HTML
+// (see index.html) instead of being wired to any execution path.
 import { createClient } from "https://esm.sh/@libsql/client@0.17.4/web";
 
 const TURSO_URL = "libsql://artdb-inannis.aws-eu-west-1.turso.io";
@@ -69,7 +69,8 @@ document.getElementById("logout-btn").addEventListener("click", () => {
 // Everything below this line is ported from web/static/app.js. Pure
 // rendering/formatting functions are verbatim; data-fetching functions are
 // rewritten onto q()/exec() instead of apiFetch(); operational-trigger
-// functions are rewritten onto command_queue (see the Researcher/Pipeline/
+// functions (run researcher/pipeline/scrapers) are not wired up at all —
+// their buttons are disabled in index.html (see the Researcher/Pipeline/
 // Aggregator sections near the end).
 // ───────────────────────────────────────────────────────────────────────────
 
@@ -502,9 +503,12 @@ async function init() {
     showView("researcher");
     history.replaceState({ view: "researcher" }, "", "#researcher");
     loadResearcherRuns();
-    loadJobQueue();
+    loadResearcherBudget();
+    loadPipelineStatus();
     loadPipelineRuns();
+    loadScraperTable();
     loadAggregatorCandidatesTable();
+    loadScraperRuns();
   } else {
     showView("list");
     history.replaceState({ view: "list" }, "", "#opportunities");
@@ -528,9 +532,12 @@ function showView(name) {
 function _navToResearcher() {
   showView("researcher");
   loadResearcherRuns();
-  loadJobQueue();
+  loadResearcherBudget();
+  loadPipelineStatus();
   loadPipelineRuns();
+  loadScraperTable();
   loadAggregatorCandidatesTable();
+  loadScraperRuns();
   history.pushState({ view: "researcher" }, "", "#researcher");
 }
 
@@ -548,9 +555,12 @@ function bindNav() {
     if (view === "researcher") {
       showView("researcher");
       loadResearcherRuns();
-      loadJobQueue();
+      loadResearcherBudget();
+      loadPipelineStatus();
       loadPipelineRuns();
+      loadScraperTable();
       loadAggregatorCandidatesTable();
+      loadScraperRuns();
     } else {
       showView("list");
     }
@@ -2465,15 +2475,14 @@ function updateScrollMirror() {
 }
 
 // ── Researcher / Pipeline / Aggregator panel ───────────────────────────────
-// This whole section is the one place this port genuinely differs in kind,
-// not just in plumbing: the local app's "Run" buttons execute a scrape/
-// search/extraction cycle live on this machine, streaming progress over SSE.
-// A static page cannot run Python/Playwright/LLM calls at all, so "Run"
-// here inserts a command_queue row instead (see DECISIONS.md and
-// docs/CLOUD_ROUTINE.md) — the cloud routine executes it on its next tick.
-// Everything else below (history tables, candidate review, domain restore)
-// is ordinary stored data and ports to direct SQL exactly like the rest of
-// this file.
+// The local app's "Run" buttons execute a scrape/search/extraction cycle
+// live on this machine, streaming progress over SSE. A static page cannot
+// run Python/Playwright/LLM calls at all, so here every such button is
+// simply `disabled` in HTML with an explanatory tooltip — there is no
+// substitute action (no queue; see docs/WEB_APP.md's "What went wrong").
+// Everything below (history tables, candidate review, domain restore,
+// budget/status display) is ordinary stored data and ports to direct SQL
+// exactly like the rest of this file.
 
 const MODE_DEFAULTS = {
   known_sources:    "all active sources",
@@ -2492,61 +2501,45 @@ function bindResearcherPanel() {
   document.getElementById("r-mode").addEventListener("change", updateLimitPlaceholder);
   updateLimitPlaceholder();
 
-  document.getElementById("btn-run-researcher").addEventListener("click", async () => {
-    const mode = document.getElementById("r-mode").value;
-    const limitVal = document.getElementById("r-limit").value;
-    const args = { mode };
-    if (limitVal) args.limit = Number(limitVal);
-    if (document.getElementById("r-full-scrape").checked) args.full_scrape = true;
-    const statusEl = document.getElementById("researcher-status");
-    try {
-      await exec("INSERT INTO command_queue (command, args) VALUES (?, ?)", ["run_researcher", JSON.stringify(args)]);
-      statusEl.innerHTML = `<span class="run-ok">Requested — queued for the next cloud routine run.</span>`;
-      loadJobQueue();
-    } catch (e) {
-      statusEl.innerHTML = `<span class="run-err">Could not enqueue: ${esc(e.message)}</span>`;
-    }
+  document.getElementById("btn-refresh-scrapers").addEventListener("click", () => {
+    loadScraperTable();
+    loadAggregatorCandidatesTable();
   });
-
-  document.getElementById("btn-run-pipeline").addEventListener("click", async () => {
-    try {
-      await exec("INSERT INTO command_queue (command, args) VALUES ('run_pipeline', '{}')");
-      loadJobQueue();
-    } catch (e) { alert("Could not enqueue: " + e.message); }
-  });
-
-  document.getElementById("btn-request-scrape").addEventListener("click", async () => {
-    try {
-      await exec("INSERT INTO command_queue (command, args) VALUES ('run_scrape', '{}')");
-      loadJobQueue();
-    } catch (e) { alert("Could not enqueue: " + e.message); }
-  });
-
-  document.getElementById("btn-refresh-scrapers").addEventListener("click", loadAggregatorCandidatesTable);
-  document.getElementById("btn-refresh-queue").addEventListener("click", loadJobQueue);
+  document.getElementById("btn-refresh-pipeline").addEventListener("click", loadPipelineStatus);
   document.getElementById("btn-refresh-pipeline-runs").addEventListener("click", () => loadPipelineRuns());
   document.getElementById("btn-toggle-excluded-domains").addEventListener("click", toggleExcludedDomainsPanel);
   document.getElementById("btn-close-excluded-domains").addEventListener("click", toggleExcludedDomainsPanel);
 }
 
-// ── Cloud Jobs queue (command_queue — Phase 7B.3) ──────────────────────────
+// ── Researcher budget (ports llm.budget._get_used against llm_usage; the
+// model/tpd ceilings come from config.MODEL_LIMITS, which a static page
+// can't import — both Groq models currently configured there are mirrored
+// here as constants) ─────────────────────────────────────────────────────
 
-async function loadJobQueue() {
-  const tbody = document.getElementById("job-queue-tbody");
-  if (!tbody) return;
+const _MODEL_LIMITS = [
+  { provider: "groq", model: "llama-3.1-8b-instant",    tpd: 500000 },
+  { provider: "groq", model: "llama-3.3-70b-versatile", tpd: 100000 },
+];
+
+async function loadResearcherBudget() {
+  const budgetEl = document.getElementById("researcher-budget");
+  if (!budgetEl) return;
   try {
-    const rows = await q(
-      "SELECT id, command, args, status, requested_at, finished_at, result_note FROM command_queue ORDER BY id DESC LIMIT 20"
-    );
-    tbody.innerHTML = rows.map(r => `
-      <tr>
-        <td>${esc(r.id)}</td><td>${esc(r.command)}</td><td>${esc(r.args)}</td>
-        <td>${esc(r.status)}</td><td>${esc(fmtDateTimeLocal(r.requested_at))}</td>
-        <td>${esc(fmtDateTimeLocal(r.finished_at))}</td><td>${esc(r.result_note)}</td>
-      </tr>`).join("") || `<tr><td colspan="7" style="color:#666;font-style:italic;">No jobs yet.</td></tr>`;
-  } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="7" class="run-err">Could not load queue (has migration 035 run?): ${esc(e.message)}</td></tr>`;
-  }
+    const today = new Date().toISOString().slice(0, 10);
+    const parts = [];
+    for (const { provider, model, tpd } of _MODEL_LIMITS) {
+      const rows = await q(
+        "SELECT tokens_in_used, tokens_out_used, requests_used FROM llm_usage WHERE date_utc = ? AND provider = ? AND model = ?",
+        [today, provider, model]
+      );
+      const used = rows[0] || { tokens_in_used: 0, tokens_out_used: 0, requests_used: 0 };
+      const label = model.replace(/:free$/, "");
+      const remaining = Math.max(0, tpd - used.tokens_in_used - used.tokens_out_used);
+      const pct = Math.round(100 * (tpd - remaining) / tpd);
+      parts.push(`<span class="budget-chip">${esc(label)} ${(remaining / 1000).toFixed(1)}K left (${pct}% used)</span>`);
+    }
+    budgetEl.innerHTML = parts.length ? `<span class="budget-label">Budget:</span> ${parts.join(" ")}` : "";
+  } catch (_) {}
 }
 
 // ── Researcher runs (history — real stored data, fully portable) ──────────
@@ -2705,6 +2698,241 @@ async function loadPipelineRuns() {
   } catch (_) {}
 }
 
+// ── Pipeline status (headline counts + by-source breakdown — ports
+// web/app.py's /pipeline/status query verbatim. The local app's per-cell
+// drill-down buttons join in-flight raw_scrape rows tagged with a still-
+// running pipeline_run_id — meaningful only while watching a run executing
+// on the same machine, not for reviewing finished runs remotely, so counts
+// here render as plain numbers with no click-through, per docs/WEB_APP.md) ─
+
+async function loadPipelineStatus() {
+  try {
+    const [[{ unprocessed }], [{ errored }], [{ total }], [{ processed }], [{ extracted }]] = await Promise.all([
+      q("SELECT COUNT(*) AS unprocessed FROM raw_scrape WHERE processed = 0 AND error IS NULL"),
+      q("SELECT COUNT(*) AS errored FROM raw_scrape WHERE error IS NOT NULL"),
+      q("SELECT COUNT(*) AS total FROM raw_scrape"),
+      q("SELECT COUNT(*) AS processed FROM raw_scrape WHERE processed = 1"),
+      q(`SELECT COUNT(DISTINCT rs.url) AS extracted FROM raw_scrape rs
+         WHERE rs.processed = 1 AND rs.error IS NULL
+           AND EXISTS (SELECT 1 FROM opportunities o WHERE o.url = rs.url)`),
+    ].map(p => p.then(rows => [rows])));
+    const scopeRows = await q("SELECT COALESCE(scope, 'unknown') AS scope, COUNT(*) AS n FROM opportunities GROUP BY 1");
+    const opportunitiesByScope = {};
+    for (const r of scopeRows) opportunitiesByScope[r.scope] = r.n;
+    const opportunitiesTotal = Object.values(opportunitiesByScope).reduce((a, b) => a + b, 0);
+
+    const bySource = await q(`
+      SELECT
+        COALESCE(s.name,
+          CASE WHEN rs.query_id IS NOT NULL
+               THEN 'Researcher: ' || COALESCE(
+                   (SELECT rr.mode FROM query_log ql JOIN researcher_runs rr ON ql.run_id = rr.id WHERE ql.id = rs.query_id),
+                   'unknown')
+               ELSE 'unknown'
+          END) AS source,
+        COUNT(*) AS total,
+        SUM(CASE WHEN rs.processed = 0 AND rs.error IS NULL THEN 1 ELSE 0 END) AS unprocessed,
+        SUM(CASE WHEN rs.processed = 1 THEN 1 ELSE 0 END) AS done,
+        SUM(CASE WHEN rs.error IS NOT NULL THEN 1 ELSE 0 END) AS errored,
+        SUM(CASE WHEN rs.processed = 1 AND rs.error IS NULL
+                  AND EXISTS (SELECT 1 FROM opportunities o WHERE o.url = rs.url)
+             THEN 1 ELSE 0 END) AS extracted,
+        SUM(CASE WHEN rs.skip_reason = 'prefilter_not_opportunity' AND rs.aggregator_note IS NULL THEN 1 ELSE 0 END) AS prefilter_dropped,
+        SUM(CASE WHEN rs.processed = 1 AND rs.error IS NULL AND rs.skip_reason IS NULL AND rs.llm_batch_id IS NULL
+                  AND rs.prefilter_signals IS NOT NULL AND rs.aggregator_note IS NULL
+                  AND NOT EXISTS (SELECT 1 FROM opportunities o WHERE o.url = rs.url)
+             THEN 1 ELSE 0 END) AS prefilter_passed,
+        SUM(CASE WHEN rs.processed = 1 AND rs.error IS NULL AND rs.skip_reason IS NULL AND rs.llm_batch_id IS NOT NULL
+                  AND rs.aggregator_note IS NULL AND COALESCE(rs.rejection_reason, '') NOT LIKE 'cross_listing:%'
+                  AND NOT EXISTS (SELECT 1 FROM opportunities o WHERE o.url = rs.url)
+             THEN 1 ELSE 0 END) AS eval_dropped,
+        SUM(CASE WHEN rs.skip_reason IN ('duplicate_pending_url', 'known_url_unchanged') OR rs.rejection_reason LIKE 'cross_listing:%'
+             THEN 1 ELSE 0 END) AS duplicates,
+        SUM(CASE WHEN rs.aggregator_note IS NOT NULL THEN 1 ELSE 0 END) AS aggregators
+      FROM raw_scrape rs
+      LEFT JOIN sources s ON rs.source_id = s.id
+      GROUP BY 1
+      ORDER BY total DESC
+    `);
+
+    let bySourceHtml = "";
+    if (bySource.length) {
+      const tot = bySource.reduce((acc, r) => {
+        acc.total += r.total || 0; acc.extracted += r.extracted || 0;
+        acc.prefilterPassed += r.prefilter_passed || 0; acc.prefilterDropped += r.prefilter_dropped || 0;
+        acc.evalDropped += r.eval_dropped || 0; acc.dups += r.duplicates || 0;
+        acc.aggregators += r.aggregators || 0; acc.errored += r.errored || 0;
+        return acc;
+      }, { total: 0, extracted: 0, prefilterPassed: 0, prefilterDropped: 0, evalDropped: 0, dups: 0, aggregators: 0, errored: 0 });
+      const num = n => n > 0 ? n.toLocaleString() : "";
+      const dataRows = bySource.map(r => `<tr>
+        <td class="ps-source">${esc(r.source)}</td>
+        <td class="ps-num">${(r.total || 0).toLocaleString()}</td>
+        <td class="ps-num">${num(r.extracted)}</td>
+        <td class="ps-num">${num(r.prefilter_passed)}</td>
+        <td class="ps-num">${num(r.prefilter_dropped)}</td>
+        <td class="ps-num">${num(r.eval_dropped)}</td>
+        <td class="ps-num">${num(r.duplicates)}</td>
+        <td class="ps-num">${num(r.aggregators)}</td>
+        <td class="ps-num">${num(r.errored)}</td>
+      </tr>`).join("");
+      const totRow = `<tr class="ps-totals-row">
+        <td class="ps-source">All sources</td>
+        <td class="ps-num">${tot.total.toLocaleString()}</td>
+        <td class="ps-num">${num(tot.extracted)}</td>
+        <td class="ps-num">${num(tot.prefilterPassed)}</td>
+        <td class="ps-num">${num(tot.prefilterDropped)}</td>
+        <td class="ps-num">${num(tot.evalDropped)}</td>
+        <td class="ps-num">${num(tot.dups)}</td>
+        <td class="ps-num">${num(tot.aggregators)}</td>
+        <td class="ps-num">${num(tot.errored)}</td>
+      </tr>`;
+      bySourceHtml = `<table class="pipeline-source-table">
+        <thead><tr>
+          <th>Source</th><th class="ps-num">Total</th>
+          <th class="ps-num">Extracted ✓</th>
+          <th class="ps-num" title="Passed pre-filter but not yet evaluated by full LLM (economy/prefilter-only runs)">Pre-filter ✓</th>
+          <th class="ps-num" title="Pages found not to be opportunities by 8B pre-filter">Pre-filter ✗</th>
+          <th class="ps-num" title="Pages found not to be opportunities by full LLM evaluation">Evaluation ✗</th>
+          <th class="ps-num">Dedup ✗</th>
+          <th class="ps-num" title="Pages flagged as index/listing aggregators by the pre-filter or full evaluation">Agg</th>
+          <th class="ps-num">Errors</th>
+        </tr></thead>
+        <tbody>${dataRows}${totRow}</tbody>
+      </table>`;
+    }
+
+    const scopeParts = [];
+    if (opportunitiesByScope.in_scope) scopeParts.push(`${opportunitiesByScope.in_scope} in-scope`);
+    if (opportunitiesByScope.borderline) scopeParts.push(`${opportunitiesByScope.borderline} borderline`);
+    if (opportunitiesByScope.out_of_scope) scopeParts.push(`${opportunitiesByScope.out_of_scope} out-of-scope`);
+    const scopeStr = scopeParts.length ? ` (${scopeParts.join(", ")})` : "";
+
+    const infoEl = document.getElementById("pipeline-info");
+    if (infoEl) {
+      infoEl.innerHTML =
+        `Unprocessed: <strong>${unprocessed}</strong> &nbsp;|&nbsp; ` +
+        `Processed: <strong>${processed}</strong> → <span class="ps-done">${extracted} extracted</span> &nbsp;|&nbsp; ` +
+        `Errors: <strong>${errored}</strong> &nbsp;|&nbsp; ` +
+        `Opportunities: <strong>${opportunitiesTotal}</strong>${scopeStr}`;
+    }
+    const breakdownEl = document.getElementById("pipeline-breakdown");
+    if (breakdownEl) breakdownEl.innerHTML = bySourceHtml;
+
+    const badge = document.getElementById("pipeline-badge");
+    if (badge) {
+      if (unprocessed > 0) { badge.textContent = `${unprocessed} pending`; badge.style.display = "inline-block"; }
+      else badge.style.display = "none";
+    }
+  } catch (e) {
+    const infoEl = document.getElementById("pipeline-info");
+    if (infoEl) infoEl.textContent = "Status unavailable";
+  }
+}
+
+// ── Scraper table / runs (per-source status — read-only here; "Run"
+// buttons are disabled in HTML, no live execution exists) ─────────────────
+
+async function loadScraperTable() {
+  const tbody = document.getElementById("scraper-table-body");
+  if (!tbody) return;
+  try {
+    const rows = await q(`
+      SELECT s.name, s.url, s.scraper_key AS key, s.scraper_type, s.listing_order, s.newest_safe,
+             s.aggregator_status, s.blocked, s.fail_count,
+             (SELECT COUNT(*) FROM raw_scrape rs WHERE rs.source_id = s.id) AS scrape_count,
+             (SELECT MAX(rs.scraped_at) FROM raw_scrape rs WHERE rs.source_id = s.id) AS last_run,
+             (SELECT rs.scrape_mode FROM raw_scrape rs WHERE rs.source_id = s.id ORDER BY rs.scraped_at DESC LIMIT 1) AS last_mode,
+             (SELECT COUNT(*) FROM raw_scrape rs WHERE rs.source_id = s.id
+                AND rs.scraped_at = (SELECT MAX(rs2.scraped_at) FROM raw_scrape rs2 WHERE rs2.source_id = s.id)) AS last_fetched
+      FROM sources s
+      WHERE s.scraper_key IS NOT NULL OR s.scraper_type = 'generic'
+      ORDER BY s.name
+    `);
+    const modeLabels = { full: "Full", newest: "Newest" };
+    const orderLabels = {
+      reverse_chronological: "rev. chron.", chronological: "chron.", alphabetical: "alpha.",
+      deadline_ascending: "deadline ↑", deadline_descending: "deadline ↓", other: "other", unknown: "unknown",
+    };
+    tbody.innerHTML = rows.map(row => {
+      const nameHtml = row.url
+        ? `<a href="${esc(row.url)}" target="_blank" style="font-weight:500">${esc(row.name)}</a>`
+        : `<span style="font-weight:500">${esc(row.name)}</span>`;
+      const pages = row.scrape_count > 0
+        ? `<span style="font-variant-numeric:tabular-nums">${row.scrape_count.toLocaleString()}</span>`
+        : '<span style="color:var(--text-muted)">—</span>';
+      const lastRun = row.last_run
+        ? `<span style="white-space:nowrap">${esc(fmtDate(row.last_run))}</span>`
+        : '<span style="color:var(--text-muted)">never</span>';
+      const mode = row.last_mode ? (modeLabels[row.last_mode] || row.last_mode) : '<span style="color:var(--text-muted)">—</span>';
+      const fetched = row.last_fetched != null ? row.last_fetched : '<span style="color:var(--text-muted)">—</span>';
+      let scraperHtml = '<span style="color:var(--text-muted)">—</span>';
+      if (row.scraper_type === "custom") scraperHtml = '<span class="st-type-badge st-type-custom">Custom</span>';
+      if (row.scraper_type === "generic") scraperHtml = '<span class="st-type-badge st-type-generic">Generic</span>';
+      let orderHtml = '<span style="color:var(--text-muted)">—</span>';
+      if (row.listing_order) {
+        const label = orderLabels[row.listing_order] || row.listing_order.replace(/_/g, " ");
+        const safe = row.newest_safe ? ' <span class="scraper-safe-badge" style="font-size:0.74em;padding:0 4px;">✓ safe</span>' : "";
+        orderHtml = `<span style="font-size:0.84em">${esc(label)}</span>${safe}`;
+      }
+      let aggHtml = "";
+      const aggClass = { candidate: "st-agg-candidate", confirmed: "st-agg-confirmed", rejected: "st-agg-rejected" };
+      if (row.aggregator_status && row.aggregator_status !== "none") {
+        aggHtml = `<span class="st-agg-badge ${aggClass[row.aggregator_status] || ""}">${esc(row.aggregator_status)}</span>`;
+      }
+      const actionsHtml = row.blocked
+        ? `<span class="scraper-blocked-badge" style="font-size:0.8em;cursor:default;" title="${row.fail_count || 0} errors">⚠ blocked</span>`
+        : `<button class="st-run-btn btn-scrape" disabled title="Not available in the public demo — requires the local scrape/extraction backend">▶ Run</button>`;
+      return `<tr>
+        <td>${nameHtml}</td><td class="st-num">${pages}</td><td>${lastRun}</td>
+        <td style="font-size:0.85em">${mode}</td><td class="st-num">${fetched}</td>
+        <td>${scraperHtml}</td><td>${orderHtml}</td><td>${aggHtml}</td>
+        <td style="white-space:nowrap">${actionsHtml}</td>
+      </tr>`;
+    }).join("") || '<tr><td colspan="9" style="color:var(--text-muted);font-style:italic;padding:10px;">No scrapers configured.</td></tr>';
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="9" class="run-err">Error loading scraper table: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+async function loadScraperRuns() {
+  const el = document.getElementById("scraper-runs");
+  if (!el) return;
+  try {
+    const runs = await q(`
+      SELECT target, status, error_message, started_at, fetched, skipped, errors,
+             CAST((JULIANDAY(COALESCE(finished_at, datetime('now'))) - JULIANDAY(started_at)) * 86400 AS INTEGER) AS duration_seconds
+      FROM scraper_runs ORDER BY id DESC LIMIT 5
+    `);
+    if (!runs.length) { el.innerHTML = ""; return; }
+    const rows = runs.map(r => {
+      const dur = r.duration_seconds != null
+        ? (r.duration_seconds < 60 ? `${r.duration_seconds}s` : `${Math.round(r.duration_seconds / 60)}m`)
+        : "—";
+      const statusClass = r.status === "completed" ? "run-ok" : r.status === "failed" ? "run-err" : "run-running";
+      const statusText = r.status === "failed" && r.error_message
+        ? `failed: ${esc(r.error_message.slice(0, 40))}`
+        : esc(r.status);
+      return `<tr>
+        <td class="ps-source">${esc(r.target)}</td>
+        <td class="${statusClass}">${statusText}</td>
+        <td>${esc(fmtDateTimeLocal(r.started_at))}</td>
+        <td class="ps-num">${r.fetched}</td>
+        <td class="ps-num">${r.skipped}</td>
+        <td class="ps-num ${r.errors > 0 ? "ps-err" : ""}">${r.errors || ""}</td>
+        <td>${dur}</td>
+      </tr>`;
+    }).join("");
+    el.innerHTML = `<table class="pipeline-source-table" style="margin-top:8px">
+      <thead><tr>
+        <th>Target</th><th>Status</th><th>Started</th>
+        <th class="ps-num">Fetched</th><th class="ps-num">Skipped</th><th class="ps-num">Errors</th><th>Duration</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+  } catch (_) {}
+}
+
 // ── Aggregator candidates ───────────────────────────────────────────────────
 
 async function loadAggregatorCandidatesTable() {
@@ -2721,17 +2949,19 @@ async function loadAggregatorCandidatesTable() {
       badge.style.display = candidates.length ? "inline-block" : "none";
     }
     if (!candidates.length) {
-      tbody.innerHTML = '<tr><td colspan="4" style="color:#666;font-style:italic;padding:10px;">No candidates yet.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="5" style="color:#666;font-style:italic;padding:10px;">No candidates yet.</td></tr>';
       return;
     }
     tbody.innerHTML = candidates.map(c => {
       let sig = {};
       try { sig = c.aggregator_signals ? JSON.parse(c.aggregator_signals) : {}; } catch (_) {}
       const evidenceHtml = sig.aggregator_note ? esc(sig.aggregator_note) : "no note yet";
+      const flagCount = sig.llm_flag_count || 0;
       const detected = c.aggregator_detected_at ? c.aggregator_detected_at.slice(0, 10) : "—";
       return `<tr data-id="${c.id}">
         <td><a href="${esc(c.url)}" target="_blank" style="font-weight:500">${esc(c.name || c.url)}</a></td>
         <td style="font-size:0.85em;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${evidenceHtml}</td>
+        <td class="st-num">${flagCount || ""}</td>
         <td style="white-space:nowrap">${esc(detected)}</td>
         <td style="white-space:nowrap">
           <button class="btn-agg-confirm" style="padding:2px 8px;font-size:0.8em;" onclick="aggAction(${c.id},'confirm')" title="Confirm aggregator">✓</button>
@@ -2805,10 +3035,12 @@ async function loadExcludedDomainsTable() {
 
 function _renderExcludedDomainsPage(page) {
   const tbody = document.getElementById("excl-domains-table-body");
+  const pager = document.getElementById("excl-domains-pager");
   if (!tbody) return;
   const rows = _exclDomainsRows;
   if (!rows.length) {
     tbody.innerHTML = '<tr><td colspan="5" style="color:#666;font-style:italic;padding:10px;">No domains excluded yet.</td></tr>';
+    if (pager) pager.innerHTML = "";
     return;
   }
   const totalPages = Math.ceil(rows.length / _REJECTED_PAGE_SIZE);
@@ -2826,6 +3058,13 @@ function _renderExcludedDomainsPage(page) {
       </td>
     </tr>`;
   }).join("");
+  if (pager) {
+    pager.innerHTML = totalPages > 1
+      ? `Page ${p}/${totalPages}
+         <button class="run-detail-close" ${p <= 1 ? "disabled" : `onclick='_renderExcludedDomainsPage(${p - 1})'`}>Prev</button>
+         <button class="run-detail-close" ${p >= totalPages ? "disabled" : `onclick='_renderExcludedDomainsPage(${p + 1})'`}>Next</button>`
+      : "";
+  }
 }
 
 async function restoreExcludedDomain(domain) {
