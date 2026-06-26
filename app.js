@@ -2730,6 +2730,7 @@ const _SOURCE_SQL_EXPR = `COALESCE(s.name,
 let _psVisible = null; // "source::type" key, or null
 let _rejectedRows = [];
 let _plRunPanelKey = null;
+let _lastAggRunPanelArgs = null;
 let _runPanelRows = [];
 let _runPanelMeta = null;
 
@@ -3078,6 +3079,7 @@ async function showRunCountPanel(runId, group, after, before) {
   const key = `${runId}::${group}`;
   if (_plRunPanelKey === key) { panel.style.display = "none"; _plRunPanelKey = null; return; }
   _plRunPanelKey = key;
+  if (group === "aggregators") _lastAggRunPanelArgs = { runId, after, before };
   const typeLabel = group === "extracted" ? "Extracted ✓" : group === "prefilter_passed" ? "Pre-filter ✓" : group === "prefilter" ? "Pre-filter ✗" : group === "dedup" ? "Dedup ✗" : group === "cross_listing" ? "Cross-listings ✗" : group === "aggregators" ? "Aggregator candidates" : "Evaluation ✗";
   panel.innerHTML = `<div class="psb-title">Run #${runId} — ${esc(typeLabel)} <em>loading…</em></div>`;
   panel.style.display = "block";
@@ -3594,6 +3596,16 @@ async function aggAction(id, action) {
       await exec("UPDATE sources SET aggregator_status='rejected' WHERE id=?", [id]);
     }
     loadAggregatorCandidatesTable();
+    if (_psVisible && _psVisible.endsWith("::aggregators")) {
+      const src = _psVisible.split("::")[0];
+      _psVisible = null;
+      showAggregatorList(src);
+    }
+    if (_plRunPanelKey && _plRunPanelKey.endsWith("::aggregators") && _lastAggRunPanelArgs) {
+      const { runId, after, before } = _lastAggRunPanelArgs;
+      _plRunPanelKey = null;
+      showRunCountPanel(runId, "aggregators", after, before);
+    }
   } catch (e) {
     if (row) row.style.opacity = "1";
     alert(`Action failed: ${e.message}`);
@@ -3663,7 +3675,7 @@ function _renderExcludedDomainsPage(page) {
       <td class="st-num">${r.total_processed || 0}</td>
       <td style="white-space:nowrap">${esc(lastRejected)}</td>
       <td style="white-space:nowrap">
-        <button class="btn-secondary" style="padding:2px 8px;font-size:0.8em;" onclick="restoreExcludedDomain('${esc(r.domain)}')">Restore</button>
+        <button class="btn-secondary" style="padding:2px 8px;font-size:0.8em;" onclick="restoreExcludedDomain('${esc(r.domain)}')" title="Un-exclude — let future searches consider this domain again">Restore</button>
       </td>
     </tr>`;
   }).join("");
