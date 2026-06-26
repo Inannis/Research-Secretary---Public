@@ -2646,11 +2646,471 @@ function hideRunDetail() {
   el.innerHTML = "";
 }
 
-// ── Pipeline runs (history, stored counters — see note in DECISIONS.md:
-// the "live" per-cell drill-down breakdown in the local app depends on
-// joining against in-flight raw_scrape rows for a run still executing on
-// the same machine; not meaningful for a remote review of finished runs,
-// so this shows the same columns from the stored counters only) ──────────
+// ── Pipeline run/source drill-down (ports web/app.py's /pipeline/rejected/llm,
+// /pipeline/extracted, /pipeline/aggregators, /pipeline/runs/{id}/aggregators —
+// raw_scrape.pipeline_run_id is a permanent tag written once when each row is
+// processed (pipeline/batch.py, extract.py, prefilter.py), not an in-flight-only
+// marker, so these drill-downs work the same for a finished historical run as
+// for one watched live; only the destructive actions (clearPipelineErrors,
+// deletePipelineRun) stay local-app-only) ─────────────────────────────────────
+
+function _sourceFilterClause(source) {
+  if (!source || source === "__all__") return { clause: "", params: [] };
+  if (source.startsWith("Researcher: ")) {
+    const mode = source.slice("Researcher: ".length);
+    if (mode === "unknown") {
+      return {
+        clause: ` AND rs.query_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM query_log ql
+                  JOIN researcher_runs rr ON ql.run_id=rr.id WHERE ql.id=rs.query_id AND rr.mode IS NOT NULL)`,
+        params: [],
+      };
+    }
+    return {
+      clause: ` AND rs.query_id IS NOT NULL AND EXISTS(SELECT 1 FROM query_log ql
+                JOIN researcher_runs rr ON ql.run_id=rr.id WHERE ql.id=rs.query_id AND rr.mode=?)`,
+      params: [mode],
+    };
+  }
+  return { clause: " AND s.name = ?", params: [source] };
+}
+
+function _normalizeError(msg) {
+  if (!msg) return "unknown";
+  let m = msg.match(/^((?:Client|Server) error '[^']+') for url/);
+  if (m) return m[1];
+  if (msg.includes("Connection closed while reading from the driver")) return "Browser crash: connection closed";
+  if (msg.includes("TargetClosedError")) return "Browser crash: target closed";
+  if (msg.includes("Timeout") && msg.includes("exceeded")) return "Page load timeout";
+  if (msg.toLowerCase().includes("timed out")) return "Request timed out";
+  if (msg.includes("forcibly closed")) return "Connection reset by remote host";
+  if (msg.includes("UNIQUE constraint") || msg.includes("IntegrityError")) return "DB constraint / integrity error";
+  if (msg.includes("JSONDecodeError") || msg.includes("json.decoder")) return "LLM response: JSON parse error";
+  if (msg.startsWith("http_")) return msg.trim();
+  return msg.split("\n")[0].slice(0, 120);
+}
+
+const _SOURCE_SQL_EXPR = `COALESCE(s.name,
+  CASE WHEN rs.query_id IS NOT NULL
+       THEN 'Researcher: ' || COALESCE(
+           (SELECT rr.mode FROM query_log ql JOIN researcher_runs rr ON ql.run_id = rr.id WHERE ql.id = rs.query_id),
+           'unknown')
+       ELSE 'unknown'
+  END)`;
+
+let _psVisible = null; // "source::type" key, or null
+let _rejectedRows = [];
+let _plRunPanelKey = null;
+let _runPanelRows = [];
+let _runPanelMeta = null;
+
+function _psBtn(count, source, type, cls) {
+  if (!count) return "";
+  return `<button class="ps-breakdown-btn ${cls}" onclick='showPipelineBreakdown(${JSON.stringify(source)},${JSON.stringify(type)})'>${count}</button>`;
+}
+
+async function showPipelineBreakdown(source, type) {
+  const panel = document.getElementById("ps-breakdown-panel");
+  if (!panel) return;
+  const key = `${source}::${type}`;
+  if (_psVisible === key) { panel.style.display = "none"; _psVisible = null; return; }
+  _psVisible = key;
+  const isAll = source === "__all__";
+  const sourceLabel = isAll ? "All sources" : source;
+  panel.innerHTML = `<div class="psb-title">Errors — ${esc(sourceLabel)} <em>loading…</em></div>`;
+  panel.style.display = "block";
+  try {
+    const { clause, params } = _sourceFilterClause(source);
+    const rows = await q(`
+      SELECT
+        CASE WHEN rs.processed = 0 THEN 'scrape' ELSE 'pipeline' END AS err_type,
+        rs.error AS error_msg,
+        COUNT(*) AS cnt,
+        MAX(rs.scraped_at) AS last_seen,
+        MAX(rs.pipeline_run_id) AS last_run_id
+      FROM raw_scrape rs
+      LEFT JOIN sources s ON rs.source_id = s.id
+      WHERE rs.error IS NOT NULL${clause}
+      GROUP BY 1, rs.error
+    `, params);
+    if (_psVisible !== key) return;
+    if (!rows.length) { panel.innerHTML = `<em>No errors.</em>`; return; }
+    const TYPE_LABEL = { scrape: "Scrape error", pipeline: "Pipeline error" };
+    const grouped = {};
+    for (const r of rows) {
+      const snippet = _normalizeError(r.error_msg);
+      const k = `${r.err_type}::${snippet}`;
+      if (!grouped[k]) grouped[k] = { type: r.err_type, snippet, count: 0, last_seen: null, last_run_id: null };
+      grouped[k].count += r.cnt;
+      if (!grouped[k].last_run_id || (r.last_run_id && r.last_run_id > grouped[k].last_run_id)) {
+        grouped[k].last_run_id = r.last_run_id;
+        grouped[k].last_seen = r.last_seen;
+      }
+    }
+    const items = Object.values(grouped).sort((a, b) => b.count - a.count);
+    const html = items.map(e => {
+      const datePart = e.last_seen ? `<span class="psb-meta">${esc(fmtDateTimeLocal(e.last_seen))}</span>` : "";
+      const runPart = e.last_run_id ? `<span class="psb-meta">run #${e.last_run_id}</span>` : "";
+      return `<div class="psb-group">
+        <div class="psb-group-header">
+          <span class="psb-count">${e.count}</span>
+          <span class="psb-label psb-err-type">${esc(TYPE_LABEL[e.type])}</span>
+          ${datePart}${runPart}
+        </div>
+        <div class="psb-detail psb-snippet">${esc(e.snippet)}</div>
+      </div>`;
+    }).join("");
+    panel.innerHTML =
+      `<div class="psb-title">${esc(`Errors — ${sourceLabel}`)} ` +
+      `<button class="run-detail-close" onclick='showPipelineBreakdown(${JSON.stringify(source)},${JSON.stringify(type)})'>close</button></div>` +
+      html;
+  } catch (e) {
+    if (_psVisible === key) panel.innerHTML = `<em>Error: ${esc(e.message)}</em>`;
+  }
+}
+
+function _rejectedListHtml(rows, label, source, group, page = 1) {
+  const closeBtn = `<button class="run-detail-close" onclick='showRejectedList(${JSON.stringify(source)},${JSON.stringify(group)})'>close</button>`;
+  if (!rows.length) return `<div class="psb-title">${esc(label)} ${closeBtn}</div><em>None found.</em>`;
+  const totalPages = Math.ceil(rows.length / _REJECTED_PAGE_SIZE);
+  const p = Math.max(1, Math.min(page, totalPages));
+  const slice = rows.slice((p - 1) * _REJECTED_PAGE_SIZE, p * _REJECTED_PAGE_SIZE);
+  const hasQuery = rows.some(r => r.query_text);
+  const hasSnippet = rows.some(r => r.snippet);
+  const hasReason = rows.some(r => r.rejection_reason);
+  const hasType = rows.some(r => r.rejection_kind);
+  const thQuery = hasQuery ? "<th>Query</th>" : "";
+  const thSnip = hasSnippet ? "<th>Snippet</th>" : "";
+  const thReason = hasReason ? "<th>Reason</th>" : "";
+  const thType = hasType ? "<th>Type</th>" : "";
+  const trs = slice.map(r => {
+    const urlShort = r.url.replace(/^https?:\/\//, "").slice(0, 55);
+    const tdDate = `<td class="psbt-date">${esc((r.scraped_at || "").slice(0, 10))}</td>`;
+    const tdQuery = hasQuery ? `<td class="psbt-query">${esc((r.query_text || "").slice(0, 60))}</td>` : "";
+    const tdSnip = hasSnippet ? `<td class="psbt-snip">${esc((r.snippet || "").slice(0, 100))}</td>` : "";
+    const tdReason = hasReason ? `<td class="psbt-reason">${esc(r.rejection_reason || "")}</td>` : "";
+    const tdType = hasType ? `<td class="psbt-kind">${esc(r.rejection_kind || "")}</td>` : "";
+    return `<tr>
+      <td class="psbt-url"><a href="${esc(r.url)}" target="_blank" title="${esc(r.url)}">${esc(urlShort)}</a></td>
+      ${tdDate}${tdQuery}${tdSnip}${tdReason}${tdType}
+    </tr>`;
+  }).join("");
+  const srcJ = JSON.stringify(source), grpJ = JSON.stringify(group);
+  const pageInfo = totalPages > 1 ? ` — page ${p}/${totalPages}` : "";
+  const pageNav = totalPages > 1
+    ? `<span class="psb-page-nav">
+        <button class="run-detail-close" ${p <= 1 ? "disabled" : `onclick='_rejectedListPage(${srcJ},${grpJ},${p - 1})'`}>Prev</button>
+        <button class="run-detail-close" ${p >= totalPages ? "disabled" : `onclick='_rejectedListPage(${srcJ},${grpJ},${p + 1})'`}>Next</button>
+      </span>`
+    : "";
+  return `<div class="psb-title">${esc(label)} (${rows.length})${pageInfo}${pageNav}${closeBtn}</div>
+    <table class="psb-table"><thead><tr><th>URL</th><th>Scraped</th>${thQuery}${thSnip}${thReason}${thType}</tr></thead>
+    <tbody>${trs}</tbody></table>`;
+}
+
+function _rejectedListPage(source, group, page) {
+  const panel = document.getElementById("ps-breakdown-panel");
+  if (!panel) return;
+  const srcLabel = source === "__all__" ? "All sources" : source;
+  const typeLabel = group === "prefilter" ? "Pre-filter rejected" : group === "dedup" ? "Dedup (known/duplicate)" : group === "prefilter_passed" ? "Pre-filter passed (awaiting eval)" : "Evaluation rejected";
+  panel.innerHTML = _rejectedListHtml(_rejectedRows, `${typeLabel} — ${srcLabel}`, source, group, page);
+}
+
+const _REJECT_GROUP_CLAUSE = {
+  llm_rejected: ` AND rs.llm_batch_id IS NOT NULL AND rs.aggregator_note IS NULL
+                  AND COALESCE(rs.rejection_reason, '') NOT LIKE 'cross_listing:%'
+                  AND NOT EXISTS (SELECT 1 FROM opportunities o WHERE o.url = rs.url)`,
+  prefilter: " AND rs.skip_reason = 'prefilter_not_opportunity' AND rs.aggregator_note IS NULL",
+  prefilter_passed: ` AND rs.skip_reason IS NULL AND rs.error IS NULL AND rs.prefilter_signals IS NOT NULL
+                       AND rs.aggregator_note IS NULL AND rs.llm_batch_id IS NULL`,
+  cross_listing: " AND rs.rejection_reason LIKE 'cross_listing:%'",
+  dedup: " AND rs.skip_reason IN ('duplicate_pending_url', 'known_url_unchanged')",
+};
+
+async function _fetchRejectedList(source, group, runId) {
+  const groupClause = _REJECT_GROUP_CLAUSE[group] || _REJECT_GROUP_CLAUSE.llm_rejected;
+  const { clause: srcClause, params: srcParams } = _sourceFilterClause(source);
+  const params = [...srcParams];
+  let runClause = "";
+  if (runId != null) { runClause = " AND rs.pipeline_run_id = ?"; params.push(runId); }
+  const rows = await q(`
+    SELECT rs.url, rs.raw_text, rs.scraped_at, rs.rejection_reason, rs.rejection_kind,
+           ${_SOURCE_SQL_EXPR} AS source, ql.query_text, rr.mode AS researcher_mode
+    FROM raw_scrape rs
+    LEFT JOIN sources s ON rs.source_id = s.id
+    LEFT JOIN query_log ql ON rs.query_id = ql.id
+    LEFT JOIN researcher_runs rr ON ql.run_id = rr.id
+    WHERE rs.processed = 1 AND rs.error IS NULL${groupClause}${srcClause}${runClause}
+    ORDER BY rs.processed_at DESC LIMIT 2000
+  `, params);
+  return rows.map(r => ({
+    url: r.url, source: r.source, query_text: r.query_text, researcher_mode: r.researcher_mode,
+    scraped_at: r.scraped_at, rejection_reason: r.rejection_reason, rejection_kind: r.rejection_kind,
+    snippet: r.raw_text ? r.raw_text.slice(0, 400).trim() : null,
+  }));
+}
+
+async function showRejectedList(source, group) {
+  const panel = document.getElementById("ps-breakdown-panel");
+  if (!panel) return;
+  const key = `${source}::${group}`;
+  if (_psVisible === key) { panel.style.display = "none"; _psVisible = null; return; }
+  _psVisible = key;
+  const srcLabel = source === "__all__" ? "All sources" : source;
+  const typeLabel = group === "prefilter" ? "Pre-filter rejected" : group === "dedup" ? "Dedup (known/duplicate)" : group === "prefilter_passed" ? "Pre-filter passed (awaiting eval)" : "Evaluation rejected";
+  const label = `${typeLabel} — ${srcLabel}`;
+  panel.innerHTML = `<div class="psb-title">${esc(label)} <em>loading…</em></div>`;
+  panel.style.display = "block";
+  try {
+    const rows = await _fetchRejectedList(source, group, null);
+    if (_psVisible !== key) return;
+    _rejectedRows = rows;
+    panel.innerHTML = _rejectedListHtml(rows, label, source, group, 1);
+  } catch (e) {
+    if (_psVisible === key) panel.innerHTML = `<em>Error: ${esc(e.message)}</em>`;
+  }
+}
+
+function _aggregatorListHtml(rows, label, closeJs) {
+  const closeBtn = `<button class="run-detail-close" onclick="${closeJs}">close</button>`;
+  if (!rows.length) return `<div class="psb-title">${esc(label)} ${closeBtn}</div><em>None found.</em>`;
+  const statusClass = { candidate: "st-agg-candidate", confirmed: "st-agg-confirmed", rejected: "st-agg-rejected" };
+  let html = `<div class="psb-title">${esc(label)} (${rows.length}) ${closeBtn}</div>`;
+  html += `<table class="psb-table"><tbody>`;
+  for (const r of rows) {
+    const urlShort = r.url.replace(/^https?:\/\//, "").slice(0, 55);
+    const badge = r.aggregator_status && r.aggregator_status !== "none"
+      ? `<span class="st-agg-badge ${statusClass[r.aggregator_status] || ""}">${esc(r.aggregator_status)}</span>`
+      : "";
+    const note = (r.aggregator_note || "").slice(0, 100);
+    const actions = (r.aggregator_status === "candidate" && r.source_id)
+      ? `<button class="btn-agg-confirm" style="padding:1px 6px;font-size:0.78em;" onclick="event.stopPropagation();aggAction(${r.source_id},'confirm')">✓</button>
+         <button class="btn-agg-reject" style="padding:1px 6px;font-size:0.78em;margin-left:2px;" onclick="event.stopPropagation();aggAction(${r.source_id},'reject')">✗</button>`
+      : "";
+    html += `<tr${r.source_id ? ` data-id="${r.source_id}"` : ""}>
+                 <td class="psbt-url"><a href="${esc(r.url)}" target="_blank" title="${esc(r.url)}">${esc(urlShort)}</a> ${badge}</td>
+                 <td class="psbt-date">${esc((r.scraped_at || "").slice(0, 10))}</td>
+                 <td class="psbt-snip">${esc(note)}</td>
+                 <td style="white-space:nowrap">${actions}</td>
+               </tr>`;
+  }
+  html += `</tbody></table>`;
+  return html;
+}
+
+async function _fetchAggregatorRows(whereSql, params) {
+  const rows = await q(`
+    SELECT rs.url, rs.scraped_at, rs.aggregator_note, ${_SOURCE_SQL_EXPR} AS source
+    FROM raw_scrape rs
+    LEFT JOIN sources s ON rs.source_id = s.id
+    LEFT JOIN query_log ql ON rs.query_id = ql.id
+    LEFT JOIN researcher_runs rr ON ql.run_id = rr.id
+    WHERE rs.aggregator_note IS NOT NULL${whereSql}
+    ORDER BY rs.scraped_at DESC
+  `, params);
+  const result = [];
+  for (const r of rows) {
+    let domainUrl = null, status = "none", sourceId = null;
+    try {
+      const u = new URL(r.url);
+      domainUrl = `${u.protocol}//${u.host}`;
+    } catch (_) {}
+    if (domainUrl) {
+      const srcRows = await q("SELECT id, aggregator_status FROM sources WHERE url=?", [domainUrl]);
+      if (srcRows[0]) { status = srcRows[0].aggregator_status || "none"; sourceId = srcRows[0].id; }
+    }
+    result.push({
+      url: r.url, domain: domainUrl, source_id: sourceId, scraped_at: r.scraped_at,
+      source: r.source, aggregator_note: r.aggregator_note, aggregator_status: status,
+    });
+  }
+  return result;
+}
+
+async function showAggregatorList(source) {
+  const panel = document.getElementById("ps-breakdown-panel");
+  if (!panel) return;
+  const key = `${source}::aggregators`;
+  if (_psVisible === key) { panel.style.display = "none"; _psVisible = null; return; }
+  _psVisible = key;
+  const srcLabel = source === "__all__" ? "All sources" : source;
+  const label = `Aggregator candidates — ${srcLabel}`;
+  panel.innerHTML = `<div class="psb-title">${esc(label)} <em>loading…</em></div>`;
+  panel.style.display = "block";
+  try {
+    const { clause, params } = _sourceFilterClause(source);
+    const rows = await _fetchAggregatorRows(clause, params);
+    if (_psVisible !== key) return;
+    panel.innerHTML = _aggregatorListHtml(rows, label, "document.getElementById('ps-breakdown-panel').style.display='none';_psVisible=null");
+  } catch (e) {
+    if (_psVisible === key) panel.innerHTML = `<em>Error: ${esc(e.message)}</em>`;
+  }
+}
+
+async function showExtractedList(source) {
+  const panel = document.getElementById("ps-breakdown-panel");
+  if (!panel) return;
+  const key = `${source}::extracted`;
+  if (_psVisible === key) { panel.style.display = "none"; _psVisible = null; return; }
+  _psVisible = key;
+  const srcLabel = source === "__all__" ? "All sources" : source;
+  const label = `Extracted ✓ — ${srcLabel}`;
+  panel.innerHTML = `<div class="psb-title">${esc(label)} <em>loading…</em></div>`;
+  panel.style.display = "block";
+  try {
+    const { clause, params } = _sourceFilterClause(source);
+    const rows = await q(`
+      SELECT o.id, o.title, o.url, o.deadline, COALESCE(o.manual_tier, o.llm_tier) AS tier,
+             rs.scraped_at, ${_SOURCE_SQL_EXPR} AS source
+      FROM raw_scrape rs
+      JOIN opportunities o ON o.url = rs.url
+      LEFT JOIN sources s ON rs.source_id = s.id
+      LEFT JOIN query_log ql ON rs.query_id = ql.id
+      LEFT JOIN researcher_runs rr ON ql.run_id = rr.id
+      WHERE rs.processed = 1 AND rs.error IS NULL${clause}
+      ORDER BY rs.processed_at DESC LIMIT 2000
+    `, params);
+    if (_psVisible !== key) return;
+    const closeJs = `showExtractedList(${JSON.stringify(source)})`;
+    panel.innerHTML = _groupedUrlListHtml(rows, label, closeJs, true, 1);
+    _runPanelRows = rows;
+    _runPanelMeta = { label, closeJs, isExtracted: true, panelId: "ps-breakdown-panel" };
+  } catch (e) {
+    if (_psVisible === key) panel.innerHTML = `<em>Error: ${esc(e.message)}</em>`;
+  }
+}
+
+function _groupedUrlListHtml(rows, label, closeJs, isExtracted, page = 1) {
+  const closeBtn = `<button class="run-detail-close" onclick="${closeJs}">close</button>`;
+  if (!rows.length) return `<div class="psb-title">${esc(label)} ${closeBtn}</div><em>None found.</em>`;
+  const totalPages = Math.ceil(rows.length / _REJECTED_PAGE_SIZE);
+  const p = Math.max(1, Math.min(page, totalPages));
+  const slice = rows.slice((p - 1) * _REJECTED_PAGE_SIZE, p * _REJECTED_PAGE_SIZE);
+  const groups = {};
+  for (const r of slice) {
+    const src = r.source || "Unknown";
+    if (!groups[src]) groups[src] = [];
+    groups[src].push(r);
+  }
+  const pageInfo = totalPages > 1 ? ` — page ${p}/${totalPages}` : "";
+  const pageNav = totalPages > 1
+    ? `<span class="psb-page-nav">
+        <button class="run-detail-close" ${p <= 1 ? "disabled" : `onclick='_runPanelPage(${p - 1})'`}>Prev</button>
+        <button class="run-detail-close" ${p >= totalPages ? "disabled" : `onclick='_runPanelPage(${p + 1})'`}>Next</button>
+      </span>`
+    : "";
+  let html = `<div class="psb-title">${esc(label)} (${rows.length})${pageInfo}${pageNav} ${closeBtn}</div>`;
+  for (const [src, items] of Object.entries(groups)) {
+    html += `<div class="psb-source-group">${esc(src)} <span class="psb-group-count">(${items.length})</span></div>`;
+    if (isExtracted) {
+      html += `<table class="psb-table"><thead><tr><th>Title</th><th>Scraped</th></tr></thead><tbody>`;
+      for (const r of items) {
+        const title = esc((r.title || r.url.replace(/^https?:\/\//, "")).slice(0, 65));
+        const tier = r.tier ? `<span class="tier-badge tier-${r.tier}" title="${esc(tierTitle(r.tier))}">T${r.tier}</span> ` : "";
+        const link = r.id
+          ? `<a href="#${r.id}" onclick="openDetail(${r.id});return false;">${title}</a>`
+          : `<a href="${esc(r.url)}" target="_blank" title="${esc(r.url)}">${title}</a>`;
+        html += `<tr><td class="psbt-url">${tier}${link}</td>
+                     <td class="psbt-date">${esc((r.scraped_at || "").slice(0, 10))}</td></tr>`;
+      }
+      html += `</tbody></table>`;
+    } else {
+      const hasSnippet = items.some(r => r.snippet);
+      const hasReason = items.some(r => r.rejection_reason);
+      const hasType = items.some(r => r.rejection_kind);
+      const thSnip = hasSnippet ? "<th>Snippet</th>" : "";
+      const thReason = hasReason ? "<th>Reason</th>" : "";
+      const thType = hasType ? "<th>Type</th>" : "";
+      html += `<table class="psb-table"><thead><tr><th>URL</th><th>Scraped</th>${thSnip}${thReason}${thType}</tr></thead><tbody>`;
+      for (const r of items) {
+        const urlShort = r.url.replace(/^https?:\/\//, "").slice(0, 55);
+        const tdSnip = hasSnippet ? `<td class="psbt-snip">${esc((r.snippet || "").slice(0, 100))}</td>` : "";
+        const tdReason = hasReason ? `<td class="psbt-reason">${esc(r.rejection_reason || "")}</td>` : "";
+        const tdType = hasType ? `<td class="psbt-kind">${esc(r.rejection_kind || "")}</td>` : "";
+        html += `<tr><td class="psbt-url"><a href="${esc(r.url)}" target="_blank" title="${esc(r.url)}">${esc(urlShort)}</a></td>
+                     <td class="psbt-date">${esc((r.scraped_at || "").slice(0, 10))}</td>
+                     ${tdSnip}${tdReason}${tdType}</tr>`;
+      }
+      html += `</tbody></table>`;
+    }
+  }
+  return html;
+}
+
+function _runPanelPage(page) {
+  const panel = document.getElementById(_runPanelMeta?.panelId || "pl-run-rej-panel");
+  if (!panel || !_runPanelMeta) return;
+  panel.innerHTML = _groupedUrlListHtml(_runPanelRows, _runPanelMeta.label, _runPanelMeta.closeJs, _runPanelMeta.isExtracted, page);
+}
+
+async function showRunCountPanel(runId, group, after, before) {
+  const panel = document.getElementById("pl-run-rej-panel");
+  if (!panel) return;
+  const key = `${runId}::${group}`;
+  if (_plRunPanelKey === key) { panel.style.display = "none"; _plRunPanelKey = null; return; }
+  _plRunPanelKey = key;
+  const typeLabel = group === "extracted" ? "Extracted ✓" : group === "prefilter_passed" ? "Pre-filter ✓" : group === "prefilter" ? "Pre-filter ✗" : group === "dedup" ? "Dedup ✗" : group === "cross_listing" ? "Cross-listings ✗" : group === "aggregators" ? "Aggregator candidates" : "Evaluation ✗";
+  panel.innerHTML = `<div class="psb-title">Run #${runId} — ${esc(typeLabel)} <em>loading…</em></div>`;
+  panel.style.display = "block";
+  const closeJs = `document.getElementById('pl-run-rej-panel').style.display='none';_plRunPanelKey=null`;
+  try {
+    if (group === "aggregators") {
+      const rows = await _fetchAggregatorRows(" AND rs.pipeline_run_id = ?", [runId]);
+      if (_plRunPanelKey !== key) return;
+      panel.innerHTML = _aggregatorListHtml(rows, `Run #${runId} — ${esc(typeLabel)}`, closeJs);
+      return;
+    }
+    let rows, isExtracted = false;
+    if (group === "extracted") {
+      isExtracted = true;
+      rows = await q(`
+        SELECT o.id, o.title, o.url, o.deadline, COALESCE(o.manual_tier, o.llm_tier) AS tier,
+               rs.scraped_at, ${_SOURCE_SQL_EXPR} AS source
+        FROM raw_scrape rs
+        JOIN opportunities o ON o.url = rs.url
+        LEFT JOIN sources s ON rs.source_id = s.id
+        LEFT JOIN query_log ql ON rs.query_id = ql.id
+        LEFT JOIN researcher_runs rr ON ql.run_id = rr.id
+        WHERE rs.processed = 1 AND rs.error IS NULL AND rs.pipeline_run_id = ?
+        ORDER BY rs.processed_at DESC LIMIT 2000
+      `, [runId]);
+    } else if (group === "cross_listing") {
+      isExtracted = true;
+      rows = await q(`
+        SELECT DISTINCT o.id, o.title, o.url, o.deadline, COALESCE(o.manual_tier, o.llm_tier) AS tier,
+               rs.scraped_at, ${_SOURCE_SQL_EXPR} AS source
+        FROM raw_scrape rs
+        JOIN opportunities o ON o.id = CAST(SUBSTR(rs.rejection_reason, 15) AS INTEGER)
+        LEFT JOIN sources s ON rs.source_id = s.id
+        LEFT JOIN query_log ql ON rs.query_id = ql.id
+        LEFT JOIN researcher_runs rr ON ql.run_id = rr.id
+        WHERE rs.processed = 1 AND rs.error IS NULL AND rs.rejection_reason LIKE 'cross_listing:%'
+              AND rs.pipeline_run_id = ?
+        UNION
+        SELECT DISTINCT COALESCE(o.id, 0) AS id,
+               COALESCE(o.title, rs.rejection_reason, '(URL already in DB)') AS title,
+               rs.url, o.deadline, COALESCE(o.manual_tier, o.llm_tier) AS tier,
+               rs.scraped_at, ${_SOURCE_SQL_EXPR} AS source
+        FROM raw_scrape rs
+        LEFT JOIN opportunities o ON o.url = rs.url
+        LEFT JOIN sources s ON rs.source_id = s.id
+        LEFT JOIN query_log ql ON rs.query_id = ql.id
+        LEFT JOIN researcher_runs rr ON ql.run_id = rr.id
+        WHERE rs.processed = 1 AND rs.error IS NULL AND rs.skip_reason = 'url_hash_conflict'
+              AND rs.pipeline_run_id = ?
+        ORDER BY scraped_at DESC LIMIT 2000
+      `, [runId, runId]);
+    } else {
+      const g = group === "prefilter" ? "prefilter" : group === "prefilter_passed" ? "prefilter_passed" : group === "dedup" ? "dedup" : "llm_rejected";
+      rows = await _fetchRejectedList("__all__", g, runId);
+    }
+    if (_plRunPanelKey !== key) return;
+    _runPanelRows = rows;
+    _runPanelMeta = { label: `Run #${runId} — ${esc(typeLabel)}`, closeJs, isExtracted, panelId: "pl-run-rej-panel" };
+    panel.innerHTML = _groupedUrlListHtml(rows, _runPanelMeta.label, closeJs, isExtracted, 1);
+  } catch (e) {
+    if (_plRunPanelKey === key) panel.innerHTML = `<em>Error: ${esc(e.message)}</em>`;
+  }
+}
 
 async function loadPipelineRuns() {
   const el = document.getElementById("pipeline-runs");
@@ -2658,28 +3118,68 @@ async function loadPipelineRuns() {
   try {
     const runs = await q(`
       SELECT id, status, extract_mode, source_filter, triggered_by, batches,
-             new_opportunities, rejected, eval_dropped, duplicates, errors,
+             new_opportunities, rejected, eval_dropped, duplicates, errors, aggregators,
              api_requests, api_tokens_in, api_tokens_out, started_at, finished_at,
              CAST((JULIANDAY(COALESCE(finished_at, datetime('now'))) - JULIANDAY(started_at)) * 86400 AS INTEGER) AS duration_seconds
       FROM pipeline_runs ORDER BY id DESC LIMIT 10
     `);
     if (!runs.length) { el.innerHTML = ""; return; }
+    const runIds = runs.map(r => r.id);
+    const liveRows = await q(`
+      SELECT
+        rs.pipeline_run_id AS run_id,
+        COUNT(*) AS live_total,
+        SUM(CASE WHEN rs.processed = 1 AND rs.error IS NULL AND EXISTS(SELECT 1 FROM opportunities o WHERE o.url = rs.url) THEN 1 ELSE 0 END) AS live_extracted,
+        SUM(CASE WHEN rs.skip_reason = 'prefilter_not_opportunity' AND rs.aggregator_note IS NULL THEN 1 ELSE 0 END) AS live_prefilter,
+        SUM(CASE WHEN rs.skip_reason IS NULL AND rs.error IS NULL AND rs.processed = 1
+                  AND rs.prefilter_signals IS NOT NULL AND rs.aggregator_note IS NULL AND rs.llm_batch_id IS NULL
+                  AND NOT EXISTS(SELECT 1 FROM opportunities o WHERE o.url = rs.url) THEN 1 ELSE 0 END) AS live_prefilter_passed,
+        SUM(CASE WHEN rs.llm_batch_id IS NOT NULL AND rs.skip_reason IS NULL AND rs.aggregator_note IS NULL
+                  AND COALESCE(rs.rejection_reason, '') NOT LIKE 'cross_listing:%'
+                  AND NOT EXISTS(SELECT 1 FROM opportunities o WHERE o.url = rs.url) THEN 1 ELSE 0 END) AS live_eval,
+        SUM(CASE WHEN rs.skip_reason IN ('duplicate_pending_url','known_url_unchanged','url_hash_conflict')
+                  OR rs.rejection_reason LIKE 'cross_listing:%' THEN 1 ELSE 0 END) AS live_dedup,
+        SUM(CASE WHEN rs.error IS NOT NULL THEN 1 ELSE 0 END) AS live_errors,
+        SUM(CASE WHEN rs.aggregator_note IS NOT NULL THEN 1 ELSE 0 END) AS live_aggregators
+      FROM raw_scrape rs
+      WHERE rs.pipeline_run_id IN (${runIds.map(() => "?").join(",")})
+      GROUP BY 1
+    `, runIds);
+    const liveByRun = {};
+    for (const lr of liveRows) liveByRun[lr.run_id] = lr;
+
     const rows = runs.map(r => {
       const dur = r.duration_seconds != null
         ? (r.duration_seconds < 60 ? `${r.duration_seconds}s` : `${Math.round(r.duration_seconds / 60)}m`)
         : "—";
       const statusClass = r.status === "completed" ? "run-ok" : (r.status === "failed" || r.status === "aborted") ? "run-err" : "run-running";
       const modeLabel = r.source_filter ? `${esc(r.extract_mode || "quality")} · ${esc(r.source_filter.slice(0, 30))}` : esc(r.extract_mode || "quality");
+      const live = liveByRun[r.id];
+      const hasLive = !!live && (live.live_total || 0) > 0;
+      const ext = hasLive ? (live.live_extracted || 0) : (r.new_opportunities || 0);
+      const pfPass = hasLive ? (live.live_prefilter_passed || 0) : 0;
+      const pf = hasLive ? (live.live_prefilter || 0) : (r.rejected || 0);
+      const ev = hasLive ? (live.live_eval || 0) : (r.eval_dropped || 0);
+      const dup = hasLive ? (live.live_dedup || 0) : (r.duplicates || 0);
+      const err = hasLive ? (live.live_errors || 0) : (r.errors || 0);
+      const agg = hasLive ? (live.live_aggregators || 0) : (r.aggregators || 0);
+      const isClaudeRun = r.extract_mode && (r.extract_mode === "claude" || r.extract_mode === "claude_prefilter");
+      const dupGroup = isClaudeRun ? "cross_listing" : "dedup";
+      const mkBtn = (n, group, cls) => n > 0
+        ? `<button class="ps-breakdown-btn ${cls}" onclick="event.stopPropagation();showRunCountPanel(${r.id},'${group}','','')">${n}</button>`
+        : "";
       return `<tr>
         <td class="ps-source">${modeLabel}<span class="cell-tag">${esc(r.triggered_by || "")}</span></td>
         <td class="${statusClass}">${esc(r.status)}</td>
         <td>${esc(fmtDateTimeLocal(r.started_at))}</td>
         <td class="ps-num">${r.batches || 0}</td>
-        <td class="ps-num">${r.new_opportunities || 0}</td>
-        <td class="ps-num">${r.rejected || 0}</td>
-        <td class="ps-num">${r.eval_dropped || 0}</td>
-        <td class="ps-num">${r.duplicates || 0}</td>
-        <td class="ps-num">${r.errors || 0}</td>
+        <td class="ps-num">${mkBtn(ext, "extracted", "ps-done") || (ext || 0)}</td>
+        <td class="ps-num">${mkBtn(pfPass, "prefilter_passed", "ps-done")}</td>
+        <td class="ps-num">${mkBtn(pf, "prefilter", "ps-err-inline") || (pf || 0)}</td>
+        <td class="ps-num">${mkBtn(ev, "eval", "ps-err-inline") || (ev || 0)}</td>
+        <td class="ps-num">${mkBtn(dup, dupGroup, "ps-err-inline") || (dup || 0)}</td>
+        <td class="ps-num">${mkBtn(agg, "aggregators", "ps-agg") || (agg || 0)}</td>
+        <td class="ps-num">${err || 0}</td>
         <td>${dur}</td>
         <td class="ps-num">${r.api_requests ?? "—"}</td>
         <td class="ps-num">${r.api_tokens_in ?? "—"}/${r.api_tokens_out ?? "—"}</td>
@@ -2688,22 +3188,25 @@ async function loadPipelineRuns() {
     el.innerHTML = `<table class="pipeline-source-table" style="margin-top:8px">
       <thead><tr>
         <th>Mode</th><th>Status</th><th>Started</th>
-        <th class="ps-num">Batches</th><th class="ps-num">New opps</th>
+        <th class="ps-num">Batches</th>
+        <th class="ps-num">Extracted ✓</th>
+        <th class="ps-num" title="Pages that passed the pre-filter stage">Pre-filter ✓</th>
         <th class="ps-num">Pre-filter ✗</th><th class="ps-num">Eval ✗</th>
-        <th class="ps-num">Dup</th><th class="ps-num">Errors</th><th>Duration</th>
+        <th class="ps-num">Dup</th>
+        <th class="ps-num" title="Aggregator candidates found and queued for review">Agg</th>
+        <th class="ps-num">Errors</th><th>Duration</th>
         <th class="ps-num">API req</th><th class="ps-num">Tokens in/out</th>
       </tr></thead>
       <tbody>${rows}</tbody>
-    </table>`;
+    </table>
+    <div id="pl-run-rej-panel" class="psb-panel" style="display:none;margin-top:8px"></div>`;
   } catch (_) {}
 }
 
 // ── Pipeline status (headline counts + by-source breakdown — ports
-// web/app.py's /pipeline/status query verbatim. The local app's per-cell
-// drill-down buttons join in-flight raw_scrape rows tagged with a still-
-// running pipeline_run_id — meaningful only while watching a run executing
-// on the same machine, not for reviewing finished runs remotely, so counts
-// here render as plain numbers with no click-through, per docs/WEB_APP.md) ─
+// web/app.py's /pipeline/status query verbatim, including the clickable
+// per-cell drill-down: see the note above loadPipelineRuns on why this is
+// valid for historical, finished runs too) ────────────────────────────────
 
 async function loadPipelineStatus() {
   try {
@@ -2765,27 +3268,38 @@ async function loadPipelineStatus() {
         return acc;
       }, { total: 0, extracted: 0, prefilterPassed: 0, prefilterDropped: 0, evalDropped: 0, dups: 0, aggregators: 0, errored: 0 });
       const num = n => n > 0 ? n.toLocaleString() : "";
-      const dataRows = bySource.map(r => `<tr>
-        <td class="ps-source">${esc(r.source)}</td>
+      function _rejBtn(count, src, group) {
+        if (!count) return "";
+        return `<button class="ps-breakdown-btn ps-err-inline" onclick='showRejectedList(${JSON.stringify(src)},${JSON.stringify(group)})'>${count}</button>`;
+      }
+      function _aggBtn(count, src) {
+        if (!count) return "";
+        return `<button class="ps-breakdown-btn ps-agg" onclick='showAggregatorList(${JSON.stringify(src)})'>${count}</button>`;
+      }
+      const dataRows = bySource.map(r => {
+        const src = r.source;
+        return `<tr>
+        <td class="ps-source">${esc(src)}</td>
         <td class="ps-num">${(r.total || 0).toLocaleString()}</td>
-        <td class="ps-num">${num(r.extracted)}</td>
-        <td class="ps-num">${num(r.prefilter_passed)}</td>
-        <td class="ps-num">${num(r.prefilter_dropped)}</td>
-        <td class="ps-num">${num(r.eval_dropped)}</td>
-        <td class="ps-num">${num(r.duplicates)}</td>
-        <td class="ps-num">${num(r.aggregators)}</td>
-        <td class="ps-num">${num(r.errored)}</td>
-      </tr>`).join("");
+        <td class="ps-num">${r.extracted > 0 ? `<button class="ps-breakdown-btn ps-done" onclick='showExtractedList(${JSON.stringify(src)})'>${r.extracted}</button>` : ""}</td>
+        <td class="ps-num">${r.prefilter_passed > 0 ? `<button class="ps-breakdown-btn ps-done" onclick='showRejectedList(${JSON.stringify(src)},"prefilter_passed")'>${r.prefilter_passed}</button>` : ""}</td>
+        <td class="ps-num">${_rejBtn(r.prefilter_dropped, src, "prefilter")}</td>
+        <td class="ps-num">${_rejBtn(r.eval_dropped, src, "llm_rejected")}</td>
+        <td class="ps-num">${r.duplicates > 0 ? `<button class="ps-breakdown-btn ps-err-inline" onclick='showRejectedList(${JSON.stringify(src)},"dedup")'>${r.duplicates}</button>` : ""}</td>
+        <td class="ps-num">${_aggBtn(r.aggregators, src)}</td>
+        <td class="ps-num">${_psBtn(r.errored, src, "error", "ps-err")}</td>
+      </tr>`;
+      }).join("");
       const totRow = `<tr class="ps-totals-row">
         <td class="ps-source">All sources</td>
         <td class="ps-num">${tot.total.toLocaleString()}</td>
-        <td class="ps-num">${num(tot.extracted)}</td>
-        <td class="ps-num">${num(tot.prefilterPassed)}</td>
-        <td class="ps-num">${num(tot.prefilterDropped)}</td>
-        <td class="ps-num">${num(tot.evalDropped)}</td>
-        <td class="ps-num">${num(tot.dups)}</td>
-        <td class="ps-num">${num(tot.aggregators)}</td>
-        <td class="ps-num">${num(tot.errored)}</td>
+        <td class="ps-num">${tot.extracted > 0 ? `<button class="ps-breakdown-btn ps-done" onclick='showExtractedList("__all__")'>${tot.extracted}</button>` : ""}</td>
+        <td class="ps-num">${tot.prefilterPassed > 0 ? `<button class="ps-breakdown-btn ps-done" onclick='showRejectedList("__all__","prefilter_passed")'>${tot.prefilterPassed}</button>` : ""}</td>
+        <td class="ps-num">${_rejBtn(tot.prefilterDropped, "__all__", "prefilter")}</td>
+        <td class="ps-num">${_rejBtn(tot.evalDropped, "__all__", "llm_rejected")}</td>
+        <td class="ps-num">${tot.dups > 0 ? `<button class="ps-breakdown-btn ps-err-inline" onclick='showRejectedList("__all__","dedup")'>${tot.dups}</button>` : ""}</td>
+        <td class="ps-num">${_aggBtn(tot.aggregators, "__all__")}</td>
+        <td class="ps-num">${_psBtn(tot.errored, "__all__", "error", "ps-err")}</td>
       </tr>`;
       bySourceHtml = `<table class="pipeline-source-table">
         <thead><tr>
@@ -2799,7 +3313,8 @@ async function loadPipelineStatus() {
           <th class="ps-num">Errors</th>
         </tr></thead>
         <tbody>${dataRows}${totRow}</tbody>
-      </table>`;
+      </table>
+      <div id="ps-breakdown-panel" class="ps-breakdown-panel" style="display:none"></div>`;
     }
 
     const scopeParts = [];
@@ -2813,7 +3328,7 @@ async function loadPipelineStatus() {
       infoEl.innerHTML =
         `Unprocessed: <strong>${unprocessed}</strong> &nbsp;|&nbsp; ` +
         `Processed: <strong>${processed}</strong> → <span class="ps-done">${extracted} extracted</span> &nbsp;|&nbsp; ` +
-        `Errors: <strong>${errored}</strong> &nbsp;|&nbsp; ` +
+        `Errors: ${_psBtn(errored, "__all__", "error", "ps-err") || `<strong>${errored}</strong>`} &nbsp;|&nbsp; ` +
         `Opportunities: <strong>${opportunitiesTotal}</strong>${scopeStr}`;
     }
     const breakdownEl = document.getElementById("pipeline-breakdown");
