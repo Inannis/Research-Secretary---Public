@@ -712,8 +712,8 @@ async function fetchOpportunitiesList(filters, page, perPage) {
   const sortCol = _SORT_COLS[sortKey] || "COALESCE(o.manual_tier, o.llm_tier)";
   const dir = filters.sort_dir === "desc" ? "DESC" : "ASC";
   const order = (sortKey && sortKey !== "tier")
-    ? `${sortCol} ${dir}, COALESCE(o.manual_tier, o.llm_tier) ASC`
-    : `COALESCE(o.manual_tier, o.llm_tier) ${dir}, o.deadline ASC`;
+    ? `${sortCol} ${dir} NULLS LAST, COALESCE(o.manual_tier, o.llm_tier) ASC NULLS LAST`
+    : `COALESCE(o.manual_tier, o.llm_tier) ${dir} NULLS LAST, o.deadline ASC NULLS LAST`;
 
   const total = (await q(`SELECT COUNT(*) AS n FROM opportunities o ${_JOINS} WHERE ${where}`, params))[0].n;
   const offset = (page - 1) * perPage;
@@ -1448,8 +1448,8 @@ async function fetchFilteredIds(filters) {
   const sortCol = _SORT_COLS[sortKey] || "COALESCE(o.manual_tier, o.llm_tier)";
   const dir = filters.sort_dir === "desc" ? "DESC" : "ASC";
   const order = (sortKey && sortKey !== "tier")
-    ? `${sortCol} ${dir}, COALESCE(o.manual_tier, o.llm_tier) ASC`
-    : `COALESCE(o.manual_tier, o.llm_tier) ${dir}, o.deadline ASC`;
+    ? `${sortCol} ${dir} NULLS LAST, COALESCE(o.manual_tier, o.llm_tier) ASC NULLS LAST`
+    : `COALESCE(o.manual_tier, o.llm_tier) ${dir} NULLS LAST, o.deadline ASC NULLS LAST`;
   const rows = await q(`SELECT o.id FROM opportunities o ${_JOINS} WHERE ${where} ORDER BY ${order}`, params);
   return rows.map(r => r.id);
 }
@@ -2506,7 +2506,7 @@ function bindResearcherPanel() {
     loadAggregatorCandidatesTable();
   });
   document.getElementById("btn-refresh-pipeline").addEventListener("click", loadPipelineStatus);
-  document.getElementById("btn-refresh-pipeline-runs").addEventListener("click", () => loadPipelineRuns());
+  document.getElementById("btn-refresh-pipeline-runs").addEventListener("click", () => loadPipelineRuns(_pipelineRunsCurrentPage));
   document.getElementById("btn-toggle-excluded-domains").addEventListener("click", toggleExcludedDomainsPanel);
   document.getElementById("btn-close-excluded-domains").addEventListener("click", toggleExcludedDomainsPanel);
 }
@@ -2554,6 +2554,12 @@ async function loadResearcherRuns() {
       FROM researcher_runs ORDER BY id DESC LIMIT 5
     `);
     if (!runs.length) { el.innerHTML = "<p style='color:#666;font-size:13px'>No runs yet.</p>"; return; }
+    const runIds = runs.map(r => r.id);
+    const digestRows = await q(
+      `SELECT run_id FROM digests WHERE run_id IN (${runIds.map(() => "?").join(",")})`,
+      runIds
+    );
+    const hasDigest = new Set(digestRows.map(d => d.run_id));
     const rows = runs.map(r => {
       const dur = r.duration_seconds != null
         ? (r.duration_seconds < 60 ? `${r.duration_seconds}s` : `${Math.round(r.duration_seconds/60)}m`)
@@ -2563,6 +2569,9 @@ async function loadResearcherRuns() {
       if (r.status === "failed" && r.error_message) {
         statusText = `failed: ${esc(r.error_message.slice(0, 50))}`;
       }
+      const digestCell = hasDigest.has(r.id)
+        ? `<a class="digest-link" href="#" onclick="event.stopPropagation();showDigest(${r.id});return false;">digest</a>`
+        : "—";
       return `<tr class="run-row" data-run-id="${r.id}" title="Click to see queries">
         <td>${r.id}</td>
         <td>${esc(r.mode)}</td>
@@ -2572,18 +2581,39 @@ async function loadResearcherRuns() {
         <td>${r.results_found ?? "—"}</td>
         <td>${r.new_opportunities ?? "—"}</td>
         <td>${dur}</td>
+        <td>${digestCell}</td>
       </tr>`;
     }).join("");
     el.innerHTML = `<table>
       <thead><tr><th>#</th><th>Mode</th><th>Status</th><th>Started</th>
-        <th>Queries</th><th>Results</th><th>New opps</th><th>Duration</th></tr></thead>
+        <th>Queries</th><th>Results</th><th>New opps</th><th>Duration</th><th>Digest</th></tr></thead>
       <tbody>${rows}</tbody>
-    </table>`;
+    </table>
+    <div id="digest-panel" style="display:none;margin-top:8px"></div>`;
     el.querySelectorAll(".run-row").forEach(tr => {
       tr.addEventListener("click", () => toggleRunDetail(parseInt(tr.dataset.runId)));
     });
   } catch (e) {
     el.innerHTML = `<p class="run-err">Could not load runs: ${esc(e.message)}</p>`;
+  }
+}
+
+async function showDigest(runId) {
+  const panel = document.getElementById("digest-panel");
+  if (!panel) return;
+  if (panel.dataset.runId === String(runId) && panel.style.display !== "none") {
+    panel.style.display = "none";
+    return;
+  }
+  panel.dataset.runId = String(runId);
+  panel.style.display = "block";
+  panel.innerHTML = "<p style='color:#666;font-size:13px'>Loading digest…</p>";
+  try {
+    const rows = await q("SELECT markdown FROM digests WHERE run_id = ? ORDER BY id DESC LIMIT 1", [runId]);
+    if (!rows.length) { panel.innerHTML = "<p class='run-err'>Digest not found.</p>"; return; }
+    panel.innerHTML = `<pre style="white-space:pre-wrap;background:#f8f8f8;border:1px solid #ddd;border-radius:4px;padding:10px;font-size:13px;max-height:400px;overflow:auto">${esc(rows[0].markdown)}</pre>`;
+  } catch (e) {
+    panel.innerHTML = `<p class="run-err">Could not load digest: ${esc(e.message)}</p>`;
   }
 }
 
@@ -3112,18 +3142,28 @@ async function showRunCountPanel(runId, group, after, before) {
   }
 }
 
-async function loadPipelineRuns() {
+let _pipelineRunsCurrentPage = 1;
+const _PIPELINE_RUNS_PAGE_SIZE = 5;
+
+async function loadPipelineRuns(page = 1) {
   const el = document.getElementById("pipeline-runs");
   if (!el) return;
+  _pipelineRunsCurrentPage = page;
   try {
+    const totalRuns = (await q("SELECT COUNT(*) AS n FROM pipeline_runs"))[0].n;
+    const pagerEl = document.getElementById("pipeline-runs-pager");
+    const offset = (page - 1) * _PIPELINE_RUNS_PAGE_SIZE;
     const runs = await q(`
       SELECT id, status, extract_mode, source_filter, triggered_by, batches,
              new_opportunities, rejected, eval_dropped, duplicates, errors, aggregators,
              api_requests, api_tokens_in, api_tokens_out, started_at, finished_at,
              CAST((JULIANDAY(COALESCE(finished_at, datetime('now'))) - JULIANDAY(started_at)) * 86400 AS INTEGER) AS duration_seconds
-      FROM pipeline_runs ORDER BY id DESC LIMIT 10
-    `);
-    if (!runs.length) { el.innerHTML = ""; return; }
+      FROM pipeline_runs ORDER BY id DESC LIMIT ? OFFSET ?
+    `, [_PIPELINE_RUNS_PAGE_SIZE, offset]);
+    if (!runs.length) {
+      if (page === 1) { el.innerHTML = ""; if (pagerEl) pagerEl.innerHTML = ""; }
+      return;
+    }
     const runIds = runs.map(r => r.id);
     const liveRows = await q(`
       SELECT
@@ -3200,6 +3240,15 @@ async function loadPipelineRuns() {
       <tbody>${rows}</tbody>
     </table>
     <div id="pl-run-rej-panel" class="psb-panel" style="display:none;margin-top:8px"></div>`;
+
+    const totalPages = Math.ceil(totalRuns / _PIPELINE_RUNS_PAGE_SIZE) || 1;
+    if (pagerEl) {
+      pagerEl.innerHTML = totalPages > 1
+        ? `<span class="psb-page-info">page ${page}/${totalPages}</span> ` +
+          `<button class="run-detail-close" ${page <= 1 ? "disabled" : `onclick="loadPipelineRuns(${page - 1})"`}>Prev</button> ` +
+          `<button class="run-detail-close" ${page >= totalPages ? "disabled" : `onclick="loadPipelineRuns(${page + 1})"`}>Next</button>`
+        : "";
+    }
   } catch (_) {}
 }
 
@@ -3656,6 +3705,16 @@ window.hideRunDetail = hideRunDetail;
 window.aggAction = aggAction;
 window.restoreExcludedDomain = restoreExcludedDomain;
 window._renderExcludedDomainsPage = _renderExcludedDomainsPage;
+window.openDetail = openDetail;
+window.showPipelineBreakdown = showPipelineBreakdown;
+window.showRejectedList = showRejectedList;
+window._rejectedListPage = _rejectedListPage;
+window.showAggregatorList = showAggregatorList;
+window.showExtractedList = showExtractedList;
+window.showRunCountPanel = showRunCountPanel;
+window._runPanelPage = _runPanelPage;
+window.showDigest = showDigest;
+window.loadPipelineRuns = loadPipelineRuns;
 
 // ── Boot ──────────────────────────────────────────────────────────────────
 const _stored = getStoredToken();
