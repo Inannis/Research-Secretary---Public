@@ -580,12 +580,3 @@ pre.raw-text { white-space: pre-wrap; word-break: break-word; font-size: 12px;
 .logout-btn { background: transparent; color: rgba(255,255,255,0.75); border: 1px solid rgba(255,255,255,0.3);
               border-radius: 3px; padding: 4px 10px; cursor: pointer; font-size: 12px; margin-left: auto; }
 .logout-btn:hover { background: rgba(255,255,255,0.1); color: #fff; }
-
-/* ── Cloud Jobs panel (request-only substitute for live SSE — see app.js) ── */
-.job-form { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; margin-bottom: 16px; }
-.job-form label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: #374151; }
-.job-form select, .job-form input { padding: 5px 8px; border: 1px solid #d1d5db; border-radius: 3px; font-size: 13px; }
-#job-submit-status { font-size: 13px; color: #166534; margin-left: 8px; }
-.queue-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
-.queue-table th { background: #f9fafb; border-bottom: 1px solid #e5e7eb; padding: 6px 10px; text-align: left; }
-.queue-table td { padding: 6px 10px; border-bottom: 1px solid #f3f4f6; max-width: 260px; overflow-wrap: anywhere; }

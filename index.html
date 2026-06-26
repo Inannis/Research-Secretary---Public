@@ -196,9 +196,6 @@
 
       <div class="tool-section">
         <h3 class="tool-section-title">Researcher</h3>
-        <p class="login-hint">This is a static page — it cannot run a search itself. "Run" requests
-          a cycle via <code>command_queue</code>; the cloud routine executes it on its next scheduled
-          tick (see docs/CLOUD_ROUTINE.md). History below is real, already-completed runs.</p>
         <div id="researcher-controls">
           <label>Mode
             <select id="r-mode">
@@ -210,14 +207,27 @@
               <option value="social">social — social-media discovery</option>
             </select>
           </label>
+          <label>Prefilter
+            <select id="r-prefilter">
+              <option value="default" selected>Default — Llama 3.1 8B (Groq)</option>
+              <option value="groq">Groq — Llama 3.1 8B</option>
+              <option value="off">Off (skip prefilter)</option>
+            </select>
+          </label>
+          <label>Evaluate with
+            <select id="r-eval-model">
+              <option value="default" selected>Default — Llama 3.3 70B (Groq)</option>
+              <option value="groq">Groq — Llama 3.3 70B</option>
+              <option value="claude">Claude (VS Code) — Sonnet</option>
+            </select>
+          </label>
           <label>Limit (queries/sources)
             <input id="r-limit" type="number" min="1" placeholder="leave blank for default">
           </label>
-          <label><input type="checkbox" id="r-full-scrape"> Full scrape</label>
-          <button id="btn-run-researcher">Request run</button>
+          <button id="btn-run-researcher" disabled title="Not available in the public demo — requires the local scrape/extraction backend">Run</button>
           <button id="btn-toggle-excluded-domains" class="btn-secondary">Excluded Domains</button>
         </div>
-        <div id="researcher-status"></div>
+        <div id="researcher-budget" class="researcher-budget"></div>
         <div id="excl-domains-section" class="tool-section hidden">
           <h3 class="tool-section-title">Excluded Domains <button class="run-detail-close" id="btn-close-excluded-domains">Close</button></h3>
           <div style="overflow-x:auto;">
@@ -236,12 +246,9 @@
               </tbody>
             </table>
           </div>
+          <div id="excl-domains-pager" style="margin-top:8px;font-size:0.85em;"></div>
         </div>
-        <h4 class="tool-subsection-title">Queue <button class="run-detail-close" id="btn-refresh-queue">Refresh</button></h4>
-        <table class="queue-table">
-          <thead><tr><th>ID</th><th>Command</th><th>Args</th><th>Status</th><th>Requested</th><th>Finished</th><th>Result</th></tr></thead>
-          <tbody id="job-queue-tbody"></tbody>
-        </table>
+        <div id="researcher-status"></div>
         <h4 class="tool-subsection-title">Past researcher runs</h4>
         <div id="researcher-runs"></div>
         <div id="run-detail" class="run-detail hidden"></div>
@@ -249,18 +256,68 @@
 
       <div class="tool-section">
         <h3 class="tool-section-title">Pipeline <span id="pipeline-badge" class="pipeline-badge"></span></h3>
-        <div class="tool-controls">
-          <button id="btn-run-pipeline">Request run</button>
+        <div class="tool-controls pipeline-controls-row">
+          <div id="pipeline-info" class="tool-info"></div>
         </div>
-        <h4 class="tool-subsection-title">Pipeline runs <button class="run-detail-close" id="btn-refresh-pipeline-runs">Refresh</button></h4>
+        <div class="tool-controls">
+          <label class="inline-label">Prefilter
+            <select id="p-prefilter">
+              <option value="default" selected>Default — Llama 3.1 8B (Groq)</option>
+              <option value="groq">Groq — Llama 3.1 8B</option>
+              <option value="off">Off (skip prefilter)</option>
+            </select>
+          </label>
+          <label class="inline-label">Evaluate with
+            <select id="p-eval-model">
+              <option value="default" selected>Default — Llama 3.3 70B (Groq)</option>
+              <option value="groq">Groq — Llama 3.3 70B</option>
+              <option value="off">Off (prefilter only)</option>
+            </select>
+          </label>
+          <button id="btn-run-pipeline" disabled title="Not available in the public demo — requires the local scrape/extraction backend">Run</button>
+          <button id="btn-refresh-pipeline" class="btn-secondary">Refresh</button>
+        </div>
+        <div id="pipeline-breakdown"></div>
+        <div id="pipeline-status"></div>
+        <h4 class="tool-subsection-title">Pipeline runs <span id="pipeline-runs-pager" class="psb-page-nav"></span> <button class="run-detail-close" id="btn-refresh-pipeline-runs">Refresh</button></h4>
         <div id="pipeline-runs" style="margin-top:12px"></div>
       </div>
 
       <div class="tool-section">
         <h3 class="tool-section-title">Aggregator Scrapers</h3>
         <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:10px;">
-          <button class="btn-scrape btn-scrape-all" id="btn-request-scrape">Request scrape</button>
+          <button class="btn-scrape btn-scrape-all" id="btn-scrape-all" data-target="all" disabled title="Not available in the public demo — requires the local scrape/extraction backend">Run all</button>
+          <button class="btn-scrape" id="btn-scrape-generic" data-target="generic_agg" disabled title="Not available in the public demo — requires the local scrape/extraction backend">Run generics</button>
+          <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:0.85em;">
+            <input type="checkbox" id="scraper-mode-toggle">
+            <span>Skip known URLs</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:0.85em;">
+            <input type="checkbox" id="scraper-skip-safe-toggle">
+            <span>Auto-skip</span>
+          </label>
+          <span style="font-size:0.78em;color:var(--text-muted);">"Skip known" stops all sources early (risky for non-chronological). "Auto-skip" only skips proven ✓ safe sources.</span>
           <button class="btn-secondary" id="btn-refresh-scrapers" style="margin-left:auto;">Refresh</button>
+        </div>
+        <div style="overflow-x:auto;">
+          <table class="scraper-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th class="st-num">Pages</th>
+                <th>Last run</th>
+                <th>Mode</th>
+                <th class="st-num">Fetched</th>
+                <th>Scraper</th>
+                <th>Listing order</th>
+                <th>Agg.</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="scraper-table-body">
+              <tr><td colspan="9" style="color:var(--text-muted);font-style:italic;padding:10px;">Loading…</td></tr>
+            </tbody>
+          </table>
         </div>
         <h4 class="tool-subsection-title">Candidates <span id="agg-cand-badge" class="pipeline-badge" title="Aggregator candidates awaiting review"></span></h4>
         <div style="overflow-x:auto;">
@@ -269,15 +326,19 @@
               <tr>
                 <th>Name</th>
                 <th>Evidence</th>
+                <th class="st-num" title="Number of times LLM evaluation flagged this site as an aggregator">Flagged</th>
                 <th>First detected</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody id="agg-candidates-table-body">
-              <tr><td colspan="4" style="color:var(--text-muted);font-style:italic;padding:10px;">Loading…</td></tr>
+              <tr><td colspan="5" style="color:var(--text-muted);font-style:italic;padding:10px;">Loading…</td></tr>
             </tbody>
           </table>
         </div>
+
+        <div id="scraper-status" style="margin-top:8px;font-size:0.87em;"></div>
+        <div id="scraper-runs" style="margin-top:12px"></div>
       </div>
     </section>
   </main>
