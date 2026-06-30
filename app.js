@@ -2681,8 +2681,7 @@ function hideRunDetail() {
 // raw_scrape.pipeline_run_id is a permanent tag written once when each row is
 // processed (pipeline/batch.py, extract.py, prefilter.py), not an in-flight-only
 // marker, so these drill-downs work the same for a finished historical run as
-// for one watched live; only the destructive actions (clearPipelineErrors,
-// deletePipelineRun) stay local-app-only) ─────────────────────────────────────
+// for one watched live. ───────────────────────────────────────────────────────
 
 function _sourceFilterClause(source) {
   if (!source || source === "__all__") return { clause: "", params: [] };
@@ -2728,6 +2727,7 @@ const _SOURCE_SQL_EXPR = `COALESCE(s.name,
   END)`;
 
 let _psVisible = null; // "source::type" key, or null
+let _psExtractedKey = null;
 let _rejectedRows = [];
 let _plRunPanelKey = null;
 let _lastAggRunPanelArgs = null;
@@ -2778,6 +2778,7 @@ async function showPipelineBreakdown(source, type) {
       }
     }
     const items = Object.values(grouped).sort((a, b) => b.count - a.count);
+    const clearBtn = `<button class="psb-clear-btn" onclick='clearPipelineErrors(${JSON.stringify(source)})'>Clear errors</button>`;
     const html = items.map(e => {
       const datePart = e.last_seen ? `<span class="psb-meta">${esc(fmtDateTimeLocal(e.last_seen))}</span>` : "";
       const runPart = e.last_run_id ? `<span class="psb-meta">run #${e.last_run_id}</span>` : "";
@@ -2789,13 +2790,34 @@ async function showPipelineBreakdown(source, type) {
         </div>
         <div class="psb-detail psb-snippet">${esc(e.snippet)}</div>
       </div>`;
-    }).join("");
+    }).join("") + `<div class="psb-actions">${clearBtn}</div>`;
     panel.innerHTML =
       `<div class="psb-title">${esc(`Errors — ${sourceLabel}`)} ` +
       `<button class="run-detail-close" onclick='showPipelineBreakdown(${JSON.stringify(source)},${JSON.stringify(type)})'>close</button></div>` +
       html;
   } catch (e) {
     if (_psVisible === key) panel.innerHTML = `<em>Error: ${esc(e.message)}</em>`;
+  }
+}
+
+async function clearPipelineErrors(source) {
+  if (!confirm(`Delete all error rows for "${source === "__all__" ? "all sources" : source}"? They will be re-scraped on the next scraper run.`)) return;
+  try {
+    if (source !== "__all__") {
+      if (source.startsWith("Researcher: ")) {
+        const mode = source.slice("Researcher: ".length);
+        await exec(`DELETE FROM raw_scrape WHERE error IS NOT NULL AND query_id IS NOT NULL
+          AND EXISTS(SELECT 1 FROM query_log ql JOIN researcher_runs rr ON ql.run_id=rr.id WHERE ql.id=raw_scrape.query_id AND rr.mode=?)`, [mode]);
+      } else {
+        await exec(`DELETE FROM raw_scrape WHERE error IS NOT NULL AND source_id=(SELECT id FROM sources WHERE name=?)`, [source]);
+      }
+    } else {
+      await exec("DELETE FROM raw_scrape WHERE error IS NOT NULL", []);
+    }
+    _psVisible = null;
+    await loadPipelineStatus();
+  } catch (e) {
+    alert(`Clear errors failed: ${e.message || e}`);
   }
 }
 
@@ -2981,8 +3003,9 @@ async function showExtractedList(source) {
   const panel = document.getElementById("ps-breakdown-panel");
   if (!panel) return;
   const key = `${source}::extracted`;
-  if (_psVisible === key) { panel.style.display = "none"; _psVisible = null; return; }
-  _psVisible = key;
+  if (_psExtractedKey === key) { panel.style.display = "none"; _psExtractedKey = null; return; }
+  _psExtractedKey = key;
+  _psVisible = null;
   const srcLabel = source === "__all__" ? "All sources" : source;
   const label = `Extracted ✓ — ${srcLabel}`;
   panel.innerHTML = `<div class="psb-title">${esc(label)} <em>loading…</em></div>`;
@@ -3000,13 +3023,13 @@ async function showExtractedList(source) {
       WHERE rs.processed = 1 AND rs.error IS NULL${clause}
       ORDER BY rs.processed_at DESC LIMIT 2000
     `, params);
-    if (_psVisible !== key) return;
+    if (_psExtractedKey !== key) return;
     const closeJs = `showExtractedList(${JSON.stringify(source)})`;
     panel.innerHTML = _groupedUrlListHtml(rows, label, closeJs, true, 1);
     _runPanelRows = rows;
     _runPanelMeta = { label, closeJs, isExtracted: true, panelId: "ps-breakdown-panel" };
   } catch (e) {
-    if (_psVisible === key) panel.innerHTML = `<em>Error: ${esc(e.message)}</em>`;
+    if (_psExtractedKey === key) panel.innerHTML = `<em>Error: ${esc(e.message)}</em>`;
   }
 }
 
@@ -3157,8 +3180,9 @@ async function loadPipelineRuns(page = 1) {
     const offset = (page - 1) * _PIPELINE_RUNS_PAGE_SIZE;
     const runs = await q(`
       SELECT id, status, extract_mode, source_filter, triggered_by, batches,
+             gate_retries, cot_max_context_tokens, cot_output_tokens,
              new_opportunities, rejected, eval_dropped, duplicates, errors, aggregators,
-             api_requests, api_tokens_in, api_tokens_out, started_at, finished_at,
+             started_at, finished_at,
              CAST((JULIANDAY(COALESCE(finished_at, datetime('now'))) - JULIANDAY(started_at)) * 86400 AS INTEGER) AS duration_seconds
       FROM pipeline_runs ORDER BY id DESC LIMIT ? OFFSET ?
     `, [_PIPELINE_RUNS_PAGE_SIZE, offset]);
@@ -3194,50 +3218,83 @@ async function loadPipelineRuns(page = 1) {
       const dur = r.duration_seconds != null
         ? (r.duration_seconds < 60 ? `${r.duration_seconds}s` : `${Math.round(r.duration_seconds / 60)}m`)
         : "—";
-      const statusClass = r.status === "completed" ? "run-ok" : (r.status === "failed" || r.status === "aborted") ? "run-err" : "run-running";
-      const modeLabel = r.source_filter ? `${esc(r.extract_mode || "quality")} · ${esc(r.source_filter.slice(0, 30))}` : esc(r.extract_mode || "quality");
+      const statusClass = r.status === "completed" ? "run-ok"
+        : (r.status === "failed" || r.status === "aborted") ? "run-err"
+        : "run-running";
+      let statusText = (r.status === "failed" || r.status === "aborted") && r.error_message
+        ? `${esc(r.status)}: ${esc(r.error_message.split(" — ")[0].slice(0, 40))}`
+        : esc(r.status);
+      if (r.gate_retries > 0 && r.status === "completed") {
+        statusText += ` <span class="run-gate-note" title="Proof-of-read gate rejected and retried this many times before passing">(${r.gate_retries} gate retr${r.gate_retries === 1 ? "y" : "ies"})</span>`;
+      }
+      const scheduledBadge = r.triggered_by === "scheduled"
+        ? ` <span class="run-scheduled-badge" title="Triggered by a Claude scheduled task">⏰</span>`
+        : "";
+      const modeLabel = (r.source_filter
+        ? `${esc(r.extract_mode || "quality")} · ${esc(r.source_filter.slice(0, 30))}`
+        : esc(r.extract_mode || "quality")) + scheduledBadge;
+      const id = r.id;
       const live = liveByRun[r.id];
       const hasLive = !!live && (live.live_total || 0) > 0;
-      const ext = hasLive ? (live.live_extracted || 0) : (r.new_opportunities || 0);
+      const ext    = hasLive ? (live.live_extracted || 0)        : (r.new_opportunities || 0);
       const pfPass = hasLive ? (live.live_prefilter_passed || 0) : 0;
-      const pf = hasLive ? (live.live_prefilter || 0) : (r.rejected || 0);
-      const ev = hasLive ? (live.live_eval || 0) : (r.eval_dropped || 0);
-      const dup = hasLive ? (live.live_dedup || 0) : (r.duplicates || 0);
-      const err = hasLive ? (live.live_errors || 0) : (r.errors || 0);
-      const agg = hasLive ? (live.live_aggregators || 0) : (r.aggregators || 0);
+      const pf     = hasLive ? (live.live_prefilter || 0)        : (r.rejected || 0);
+      const ev     = hasLive ? (live.live_eval || 0)             : (r.eval_dropped || 0);
+      const dup    = hasLive ? (live.live_dedup || 0)            : (r.duplicates || 0);
+      const err    = hasLive ? (live.live_errors || 0)           : (r.errors || 0);
+      const agg    = hasLive ? (live.live_aggregators || 0)      : (r.aggregators || 0);
+      const total = hasLive ? (live.live_total || 0) : (ext + pf + ev + dup + err);
+      const t0 = r.started_at || "";
+      const t1 = r.finished_at || "";
+      const canDrill = hasLive || !!r.finished_at;
       const isClaudeRun = r.extract_mode && (r.extract_mode === "claude" || r.extract_mode === "claude_prefilter");
       const dupGroup = isClaudeRun ? "cross_listing" : "dedup";
-      const mkBtn = (n, group, cls) => n > 0
-        ? `<button class="ps-breakdown-btn ${cls}" onclick="event.stopPropagation();showRunCountPanel(${r.id},'${group}','','')">${n}</button>`
+      const mkBtn = (n, group, cls) => {
+        const drillable = n > 0 && (group === "dedup" ? hasLive : canDrill);
+        return drillable
+          ? `<button class="ps-breakdown-btn ${cls}" onclick="event.stopPropagation();showRunCountPanel(${id},'${group}','${t0}','${t1}')">${n}</button>`
+          : (n > 0 ? `<span class="ps-num">${n}</span>` : "");
+      };
+      const canDelete = r.status !== "running";
+      const deleteBtn = canDelete
+        ? `<button class="ps-delete-btn" title="Delete run and reset rows for reprocessing" onclick="event.stopPropagation();deletePipelineRun(${id})">✕</button>`
         : "";
+      const fmtTok = n => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`;
+      const tokens = r.cot_max_context_tokens != null
+        ? `<span title="Peak single-call context size">${fmtTok(r.cot_max_context_tokens)}</span> / <span title="Total output tokens generated">${fmtTok(r.cot_output_tokens || 0)}</span>`
+        : "—";
       return `<tr>
-        <td class="ps-source">${modeLabel}<span class="cell-tag">${esc(r.triggered_by || "")}</span></td>
-        <td class="${statusClass}">${esc(r.status)}</td>
+        <td class="ps-source">${modeLabel}</td>
+        <td class="${statusClass}">${statusText}</td>
         <td>${esc(fmtDateTimeLocal(r.started_at))}</td>
+        <td class="ps-num">${total || "—"}</td>
         <td class="ps-num">${r.batches || 0}</td>
-        <td class="ps-num">${mkBtn(ext, "extracted", "ps-done") || (ext || 0)}</td>
+        <td class="ps-num">${mkBtn(ext, "extracted", "ps-done")}</td>
         <td class="ps-num">${mkBtn(pfPass, "prefilter_passed", "ps-done")}</td>
-        <td class="ps-num">${mkBtn(pf, "prefilter", "ps-err-inline") || (pf || 0)}</td>
-        <td class="ps-num">${mkBtn(ev, "eval", "ps-err-inline") || (ev || 0)}</td>
-        <td class="ps-num">${mkBtn(dup, dupGroup, "ps-err-inline") || (dup || 0)}</td>
-        <td class="ps-num">${mkBtn(agg, "aggregators", "ps-agg") || (agg || 0)}</td>
-        <td class="ps-num">${err || 0}</td>
+        <td class="ps-num">${mkBtn(pf, "prefilter", "ps-err-inline")}</td>
+        <td class="ps-num">${mkBtn(ev, "eval", "ps-err-inline")}</td>
+        <td class="ps-num">${mkBtn(dup, dupGroup, "ps-err-inline")}</td>
+        <td class="ps-num">${agg > 0 ? `<button class="ps-breakdown-btn ps-agg" onclick="event.stopPropagation();showRunCountPanel(${id},'aggregators','${t0}','${t1}')">${agg}</button>` : ""}</td>
+        <td class="ps-num">${err > 0 ? `<span class="ps-err">${err}</span>` : ""}</td>
         <td>${dur}</td>
-        <td class="ps-num">${r.api_requests ?? "—"}</td>
-        <td class="ps-num">${r.api_tokens_in ?? "—"}/${r.api_tokens_out ?? "—"}</td>
+        <td class="ps-num">${tokens}</td>
+        <td>${deleteBtn}</td>
       </tr>`;
     }).join("");
     el.innerHTML = `<table class="pipeline-source-table" style="margin-top:8px">
       <thead><tr>
         <th>Mode</th><th>Status</th><th>Started</th>
-        <th class="ps-num">Batches</th>
+        <th class="ps-num">Total</th><th class="ps-num">Batches</th>
         <th class="ps-num">Extracted ✓</th>
         <th class="ps-num" title="Pages that passed the pre-filter stage">Pre-filter ✓</th>
-        <th class="ps-num">Pre-filter ✗</th><th class="ps-num">Eval ✗</th>
-        <th class="ps-num">Dup</th>
+        <th class="ps-num" title="Pages found not to be opportunities by 8B pre-filter">Pre-filter ✗</th>
+        <th class="ps-num" title="Pages found not to be opportunities by full LLM evaluation">Evaluation ✗</th>
+        <th class="ps-num">Dedup ✗</th>
         <th class="ps-num" title="Aggregator candidates found and queued for review">Agg</th>
-        <th class="ps-num">Errors</th><th>Duration</th>
-        <th class="ps-num">API req</th><th class="ps-num">Tokens in/out</th>
+        <th class="ps-num">Errors</th>
+        <th>Duration</th>
+        <th class="ps-num" title="Claude Code token usage for this run: peak single-call context size, then total output tokens generated">Tokens</th>
+        <th></th>
       </tr></thead>
       <tbody>${rows}</tbody>
     </table>
@@ -3252,6 +3309,22 @@ async function loadPipelineRuns(page = 1) {
         : "";
     }
   } catch (_) {}
+}
+
+async function deletePipelineRun(runId) {
+  if (!confirm(`Delete pipeline run #${runId} and reset all its rows for reprocessing?`)) return;
+  try {
+    const run = (await q("SELECT id, status FROM pipeline_runs WHERE id=?", [runId]))[0];
+    if (!run) { alert("Run not found"); return; }
+    if (run.status === "running") { alert("Cannot delete a running pipeline run"); return; }
+    await exec(`UPDATE raw_scrape SET processed=0, processed_at=NULL, skip_reason=NULL,
+      prefilter_signals=NULL, pipeline_run_id=NULL WHERE pipeline_run_id=?`, [runId]);
+    await exec("DELETE FROM pipeline_runs WHERE id=?", [runId]);
+    loadPipelineRuns();
+    alert(`Run #${runId} deleted — rows reset for reprocessing.`);
+  } catch (e) {
+    alert(`Delete failed: ${e.message || e}`);
+  }
 }
 
 // ── Pipeline status (headline counts + by-source breakdown — ports
@@ -3727,6 +3800,8 @@ window.showRunCountPanel = showRunCountPanel;
 window._runPanelPage = _runPanelPage;
 window.showDigest = showDigest;
 window.loadPipelineRuns = loadPipelineRuns;
+window.deletePipelineRun = deletePipelineRun;
+window.clearPipelineErrors = clearPipelineErrors;
 
 // ── Boot ──────────────────────────────────────────────────────────────────
 const _stored = getStoredToken();
