@@ -3106,7 +3106,7 @@ async function showRunCountPanel(runId, group, after, before) {
   const typeLabel = group === "extracted" ? "Extracted ✓" : group === "prefilter_passed" ? "Pre-filter ✓" : group === "prefilter" ? "Pre-filter ✗" : group === "dedup" ? "Dedup ✗" : group === "cross_listing" ? "Cross-listings ✗" : group === "aggregators" ? "Aggregator candidates" : "Evaluation ✗";
   panel.innerHTML = `<div class="psb-title">Run #${runId} — ${esc(typeLabel)} <em>loading…</em></div>`;
   panel.style.display = "block";
-  const closeJs = `document.getElementById('pl-run-rej-panel').style.display='none';_plRunPanelKey=null`;
+  const closeJs = `showRunCountPanel(${id},${JSON.stringify(group)},${JSON.stringify(t0)},${JSON.stringify(t1)})`;
   try {
     if (group === "aggregators") {
       const rows = await _fetchAggregatorRows(" AND rs.pipeline_run_id = ?", [runId]);
