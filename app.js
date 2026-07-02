@@ -3289,7 +3289,7 @@ async function loadPipelineRuns(page = 1) {
         <td class="${statusClass}">${statusText}</td>
         <td style="white-space:nowrap">${esc(fmtDateTimeLocal(r.started_at))}</td>
         <td class="ps-num">${total || "—"}</td>
-        <td class="ps-num">${r.batches || 0}</td>
+        <td class="ps-num">${r.extract_mode === "per_item" ? "—" : (r.batches || 0)}</td>
         <td class="ps-num">${mkBtn(ext, "extracted", "ps-done")}</td>
         <td class="ps-num">${mkBtn(pfPass, "prefilter_passed", "ps-done")}</td>
         <td class="ps-num">${mkBtn(pf, "prefilter", "ps-err-inline")}</td>
