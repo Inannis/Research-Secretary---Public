@@ -2993,7 +2993,7 @@ async function showAggregatorList(source) {
     const { clause, params } = _sourceFilterClause(source);
     const rows = await _fetchAggregatorRows(clause, params);
     if (_psVisible !== key) return;
-    panel.innerHTML = _aggregatorListHtml(rows, label, "document.getElementById('ps-breakdown-panel').style.display='none';_psVisible=null");
+    panel.innerHTML = _aggregatorListHtml(rows, label, `showAggregatorList(${JSON.stringify(source)})`);
   } catch (e) {
     if (_psVisible === key) panel.innerHTML = `<em>Error: ${esc(e.message)}</em>`;
   }
@@ -3106,7 +3106,7 @@ async function showRunCountPanel(runId, group, after, before) {
   const typeLabel = group === "extracted" ? "Extracted ✓" : group === "prefilter_passed" ? "Pre-filter ✓" : group === "prefilter" ? "Pre-filter ✗" : group === "dedup" ? "Dedup ✗" : group === "cross_listing" ? "Cross-listings ✗" : group === "aggregators" ? "Aggregator candidates" : "Evaluation ✗";
   panel.innerHTML = `<div class="psb-title">Run #${runId} — ${esc(typeLabel)} <em>loading…</em></div>`;
   panel.style.display = "block";
-  const closeJs = `showRunCountPanel(${id},${JSON.stringify(group)},${JSON.stringify(t0)},${JSON.stringify(t1)})`;
+  const closeJs = `showRunCountPanel(${runId},${JSON.stringify(group)},${JSON.stringify(after)},${JSON.stringify(before)})`;
   try {
     if (group === "aggregators") {
       const rows = await _fetchAggregatorRows(" AND rs.pipeline_run_id = ?", [runId]);
