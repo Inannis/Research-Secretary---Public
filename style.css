@@ -290,6 +290,7 @@ td .opp-type { font-size: 11px; }
 #btn-run-researcher:disabled { background: #9ca3af; cursor: not-allowed; }
 #researcher-status { margin-bottom: 16px; font-size: 14px; min-height: 24px; }
 .run-ok { color: #166534; } .run-err { color: #991b1b; } .run-running { color: #92400e; }
+.run-warn { color: #b45309; font-weight: 600; }
 .run-gate-note { color: #6b7280; font-weight: 400; }
 .run-scheduled-badge { font-size: 11px; }
 #researcher-runs table { width: 100%; border-collapse: collapse; font-size: 13px; }

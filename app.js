@@ -3221,10 +3221,12 @@ async function loadPipelineRuns(page = 1) {
         : "—";
       const statusClass = r.status === "completed" ? "run-ok"
         : (r.status === "failed" || r.status === "aborted") ? "run-err"
+        : r.status === "token_limit" ? "run-warn"
         : "run-running";
-      let statusText = (r.status === "failed" || r.status === "aborted") && r.error_message
-        ? `${esc(r.status)}: ${esc(r.error_message.split(" — ")[0].slice(0, 40))}`
-        : esc(r.status);
+      const statusLabel = r.status === "token_limit" ? "token limit" : r.status;
+      let statusText = (r.status === "failed" || r.status === "aborted" || r.status === "token_limit") && r.error_message
+        ? `${esc(statusLabel)}: ${esc(r.error_message.split(" — ")[0].slice(0, 40))}`
+        : esc(statusLabel);
       if (r.gate_retries > 0 && r.status === "completed") {
         statusText += ` <span class="run-gate-note" title="Proof-of-read gate rejected and retried this many times before passing">(${r.gate_retries} gate retr${r.gate_retries === 1 ? "y" : "ies"})</span>`;
       }
