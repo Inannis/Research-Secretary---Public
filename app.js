@@ -2732,6 +2732,22 @@ let _rejectedRows = [];
 let _plRunPanelKey = null;
 let _lastAggRunPanelArgs = null;
 let _runPanelRows = [];
+
+// No-arg close handlers for the drill-down panels. Using a no-arg call in the
+// inline onclick avoids ever embedding JSON.stringify (double quotes) in the
+// attribute — the quoting bug that kept silently truncating the close button.
+// They just hide the panel and reset its toggle key so the number reopens it.
+function closeRunPanel() {
+  const p = document.getElementById("pl-run-rej-panel");
+  if (p) { p.style.display = "none"; p.innerHTML = ""; }
+  _plRunPanelKey = null;
+}
+function closeBreakdownPanel() {
+  const p = document.getElementById("ps-breakdown-panel");
+  if (p) { p.style.display = "none"; p.innerHTML = ""; }
+  _psVisible = null;
+  _psExtractedKey = null;
+}
 let _runPanelMeta = null;
 
 function _psBtn(count, source, type, cls) {
@@ -2993,7 +3009,7 @@ async function showAggregatorList(source) {
     const { clause, params } = _sourceFilterClause(source);
     const rows = await _fetchAggregatorRows(clause, params);
     if (_psVisible !== key) return;
-    panel.innerHTML = _aggregatorListHtml(rows, label, `showAggregatorList(${JSON.stringify(source)})`);
+    panel.innerHTML = _aggregatorListHtml(rows, label, "closeBreakdownPanel()");
   } catch (e) {
     if (_psVisible === key) panel.innerHTML = `<em>Error: ${esc(e.message)}</em>`;
   }
@@ -3024,7 +3040,7 @@ async function showExtractedList(source) {
       ORDER BY rs.processed_at DESC LIMIT 2000
     `, params);
     if (_psExtractedKey !== key) return;
-    const closeJs = `showExtractedList(${JSON.stringify(source)})`;
+    const closeJs = "closeBreakdownPanel()";
     panel.innerHTML = _groupedUrlListHtml(rows, label, closeJs, true, 1);
     _runPanelRows = rows;
     _runPanelMeta = { label, closeJs, isExtracted: true, panelId: "ps-breakdown-panel" };
@@ -3106,7 +3122,7 @@ async function showRunCountPanel(runId, group, after, before) {
   const typeLabel = group === "extracted" ? "Extracted ✓" : group === "prefilter_passed" ? "Pre-filter ✓" : group === "prefilter" ? "Pre-filter ✗" : group === "dedup" ? "Dedup ✗" : group === "cross_listing" ? "Cross-listings ✗" : group === "aggregators" ? "Aggregator candidates" : "Evaluation ✗";
   panel.innerHTML = `<div class="psb-title">Run #${runId} — ${esc(typeLabel)} <em>loading…</em></div>`;
   panel.style.display = "block";
-  const closeJs = `showRunCountPanel(${runId},${JSON.stringify(group)},${JSON.stringify(after)},${JSON.stringify(before)})`;
+  const closeJs = "closeRunPanel()";
   try {
     if (group === "aggregators") {
       const rows = await _fetchAggregatorRows(" AND rs.pipeline_run_id = ?", [runId]);
@@ -3802,6 +3818,8 @@ window._rejectedListPage = _rejectedListPage;
 window.showAggregatorList = showAggregatorList;
 window.showExtractedList = showExtractedList;
 window.showRunCountPanel = showRunCountPanel;
+window.closeRunPanel = closeRunPanel;
+window.closeBreakdownPanel = closeBreakdownPanel;
 window._runPanelPage = _runPanelPage;
 window.showDigest = showDigest;
 window.loadPipelineRuns = loadPipelineRuns;
