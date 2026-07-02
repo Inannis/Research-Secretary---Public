@@ -2924,7 +2924,7 @@ async function showRejectedList(source, group) {
 }
 
 function _aggregatorListHtml(rows, label, closeJs) {
-  const closeBtn = `<button class="run-detail-close" onclick="${closeJs}">close</button>`;
+  const closeBtn = `<button class="run-detail-close" onclick="${esc(closeJs)}">close</button>`;
   if (!rows.length) return `<div class="psb-title">${esc(label)} ${closeBtn}</div><em>None found.</em>`;
   const statusClass = { candidate: "st-agg-candidate", confirmed: "st-agg-confirmed", rejected: "st-agg-rejected" };
   let html = `<div class="psb-title">${esc(label)} (${rows.length}) ${closeBtn}</div>`;
@@ -3034,7 +3034,7 @@ async function showExtractedList(source) {
 }
 
 function _groupedUrlListHtml(rows, label, closeJs, isExtracted, page = 1) {
-  const closeBtn = `<button class="run-detail-close" onclick="${closeJs}">close</button>`;
+  const closeBtn = `<button class="run-detail-close" onclick="${esc(closeJs)}">close</button>`;
   if (!rows.length) return `<div class="psb-title">${esc(label)} ${closeBtn}</div><em>None found.</em>`;
   const totalPages = Math.ceil(rows.length / _REJECTED_PAGE_SIZE);
   const p = Math.max(1, Math.min(page, totalPages));
