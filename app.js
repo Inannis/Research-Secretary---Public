@@ -2285,7 +2285,7 @@ function fmtDateTimeLocal(s) {
   const [, y, mo, d, h, mi, se] = m;
   const dt = new Date(Date.UTC(+y, +mo - 1, +d, +h, +mi, +(se || 0)));
   const pad = n => String(n).padStart(2, "0");
-  return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())} ${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
+  return `${pad(dt.getDate())}/${pad(dt.getMonth() + 1)} ${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
 }
 
 function fmtModel(m) {
@@ -3269,7 +3269,7 @@ async function loadPipelineRuns(page = 1) {
       return `<tr>
         <td class="ps-source">${modeLabel}</td>
         <td class="${statusClass}">${statusText}</td>
-        <td>${esc(fmtDateTimeLocal(r.started_at))}</td>
+        <td style="white-space:nowrap">${esc(fmtDateTimeLocal(r.started_at))}</td>
         <td class="ps-num">${total || "—"}</td>
         <td class="ps-num">${r.batches || 0}</td>
         <td class="ps-num">${mkBtn(ext, "extracted", "ps-done")}</td>
