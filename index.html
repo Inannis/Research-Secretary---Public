@@ -1,1 +1,349 @@
-PLACEHOLDER_INDEX_HTML
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Artist Residency DB</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- Login screen: shown until a Turso auth token is present. The local app
+       has no auth (it's local-only); this is the one structural addition
+       the static deployment needs. No secret is baked into this page. -->
+  <div id="login-screen" class="login-screen">
+    <form id="login-form" class="login-form">
+      <h1>Artist Residency DB</h1>
+      <p class="login-hint">Paste your Turso database auth token to connect.</p>
+      <input id="login-token" type="password" autocomplete="current-password"
+             placeholder="Turso auth token" required>
+      <button type="submit">Connect</button>
+      <p id="login-error" class="login-error" hidden></p>
+    </form>
+  </div>
+
+  <div id="app" hidden>
+  <header>
+    <h1>Artist Residency DB</h1>
+    <div id="stats-bar">Loading...</div>
+    <nav id="main-nav">
+      <button id="nav-list" class="active">Opportunities</button>
+      <button id="nav-researcher">Researcher</button>
+    </nav>
+    <button id="logout-btn" class="logout-btn">Log out</button>
+  </header>
+  <main>
+    <section id="list-view">
+      <div id="filter-bar">
+        <label>Tier
+          <select id="f-tier">
+            <option value="">All tiers</option>
+            <option value="1">Tier 1</option>
+            <option value="2">Tier 2</option>
+            <option value="3">Tier 3</option>
+            <option value="4">Tier 4</option>
+          </select>
+        </label>
+        <label>Scope
+          <select id="f-scope">
+            <option value="">All scopes</option>
+            <option value="in_scope">In scope</option>
+            <option value="borderline">Borderline</option>
+            <option value="out_of_scope">Out of scope</option>
+          </select>
+        </label>
+        <label>Eligibility
+          <select id="f-eligibility">
+            <option value="not_ineligible">Not ineligible</option>
+            <option value="eligible">Eligible only</option>
+            <option value="all">All</option>
+          </select>
+        </label>
+        <label>Country
+          <input id="f-country" type="text" placeholder="Germany">
+        </label>
+        <label>Deadline to
+          <input id="f-dl-before" type="date">
+        </label>
+        <label>App fee
+          <select id="f-app-fee">
+            <option value="">All</option>
+            <option value="none">No fee</option>
+            <option value="has">Has fee</option>
+          </select>
+        </label>
+        <label>Has cost
+          <select id="f-cost">
+            <option value="">All</option>
+            <option value="none">Free</option>
+            <option value="has">Has cost</option>
+          </select>
+        </label>
+        <label>Max cost €
+          <input id="f-max-cost" type="number" min="0" placeholder="e.g. 500">
+        </label>
+        <label>Search
+          <input id="f-search" type="text" placeholder="title or institution">
+        </label>
+        <label>Class
+          <select id="f-opp-class">
+            <option value="">All classes</option>
+            <option value="residency">Residency</option>
+            <option value="funding">Funding</option>
+            <option value="project_call">Project call</option>
+            <option value="other">Other</option>
+          </select>
+        </label>
+        <label>Flagged
+          <select id="f-flagged">
+            <option value="">All</option>
+            <option value="only">Flagged only</option>
+            <option value="hide">Hide flagged</option>
+          </select>
+        </label>
+        <label>Mismatch
+          <select id="f-mismatch">
+            <option value="">All</option>
+            <option value="only">Mismatch only</option>
+            <option value="hide">Hide mismatch</option>
+          </select>
+        </label>
+        <label>Language
+          <select id="f-source-language">
+            <option value="">All languages</option>
+          </select>
+        </label>
+        <label>Source
+          <select id="f-source">
+            <option value="">All sources</option>
+            <optgroup label="Aggregators">
+              <option value="agg:all">All aggregators</option>
+              <option value="agg:Res Artis">Res Artis</option>
+              <option value="agg:TransArtists">TransArtists</option>
+            </optgroup>
+            <optgroup label="Researcher">
+              <option value="res:all">All researcher modes</option>
+              <option value="res:oriented_search">Oriented search</option>
+              <option value="res:independent">Independent</option>
+              <option value="res:relevance_guided">Relevance guided</option>
+              <option value="res:relevance_blind">Relevance blind</option>
+              <option value="res:known_sources">Known sources</option>
+            </optgroup>
+          </select>
+        </label>
+        <div class="filter-buttons">
+          <button id="btn-apply">Apply</button>
+          <button id="btn-reset">Reset</button>
+        </div>
+      </div>
+      <div id="result-info-bar">
+        <div id="result-info"></div>
+        <div class="result-info-controls">
+          <label class="inline-check" title="Show a second line per row with LLM evidence (tier note, competitiveness, ambiguities)">
+            <input type="checkbox" id="f-llm-output"> LLM output
+          </label>
+          <label class="inline-check" title="Group rows by institution">
+            <input type="checkbox" id="f-group"> Group institutions
+          </label>
+          <label class="inline-check" title="Within a group, cluster near-duplicate calls (same call, different deadline/price tier)">
+            <input type="checkbox" id="f-group-similar"> Group similar
+          </label>
+          <button id="btn-columns">Columns ▾</button>
+          <div id="col-picker-panel" class="col-picker-panel hidden"></div>
+        </div>
+      </div>
+      <div id="table-wrap">
+        <table id="opp-table">
+          <thead>
+            <tr>
+              <th>Tier</th>
+              <th>Title</th>
+              <th>Institution</th>
+              <th>Country</th>
+              <th>Deadline</th>
+              <th>Eligibility</th>
+              <th>Quality</th>
+              <th>Scope</th>
+            </tr>
+          </thead>
+          <tbody id="opp-tbody"></tbody>
+        </table>
+      </div>
+      <div id="table-scroll-mirror"><div id="table-scroll-mirror-inner"></div></div>
+      <div id="pagination"></div>
+    </section>
+
+    <section id="detail-view" class="hidden">
+      <div class="detail-nav-bar">
+        <button id="btn-back">Back to list</button>
+        <button id="btn-prev-opp" disabled>← Prev</button>
+        <span id="detail-nav-pos"></span>
+        <button id="btn-next-opp" disabled>Next →</button>
+        <label class="inline-check nav-llm-label">
+          <input type="checkbox" id="nav-llm-output">
+          LLM output
+        </label>
+        <label class="inline-check nav-llm-label" title="Make the extracted fields below editable and save changes back to the database">
+          <input type="checkbox" id="nav-edit-fields">
+          Edit fields
+        </label>
+      </div>
+      <div id="detail-inner"></div>
+    </section>
+
+    <section id="researcher-view" class="hidden">
+      <button id="btn-back-researcher" class="btn-secondary">Back to list</button>
+
+      <div class="tool-section">
+        <h3 class="tool-section-title">Researcher</h3>
+        <div id="researcher-controls">
+          <label>Mode
+            <select id="r-mode">
+              <option value="known_sources">known_sources — crawl known sites</option>
+              <option value="oriented_search" selected>oriented_search — search with DB-derived queries</option>
+              <option value="independent">independent — target underrepresented institutions</option>
+              <option value="relevance_guided">relevance_guided — profile-anchored search</option>
+              <option value="relevance_blind">relevance_blind — artist-profile search</option>
+              <option value="social">social — social-media discovery</option>
+            </select>
+          </label>
+          <label>Prefilter
+            <select id="r-prefilter">
+              <option value="default" selected>Default — Llama 3.1 8B (Groq)</option>
+              <option value="groq">Groq — Llama 3.1 8B</option>
+              <option value="off">Off (skip prefilter)</option>
+            </select>
+          </label>
+          <label>Evaluate with
+            <select id="r-eval-model">
+              <option value="default" selected>Default — Llama 3.3 70B (Groq)</option>
+              <option value="groq">Groq — Llama 3.3 70B</option>
+              <option value="claude">Claude (VS Code) — Sonnet</option>
+            </select>
+          </label>
+          <label>Limit (queries/sources)
+            <input id="r-limit" type="number" min="1" placeholder="leave blank for default">
+          </label>
+          <button id="btn-run-researcher" disabled title="Not available in the public demo — requires the local scrape/extraction backend">Run</button>
+          <button id="btn-toggle-excluded-domains" class="btn-secondary">Excluded Domains</button>
+        </div>
+        <div id="researcher-budget" class="researcher-budget"></div>
+        <div id="excl-domains-section" class="tool-section hidden">
+          <h3 class="tool-section-title">Excluded Domains <button class="run-detail-close" id="btn-close-excluded-domains">Close</button></h3>
+          <div style="overflow-x:auto;">
+            <table class="scraper-table" style="width:auto;">
+              <thead>
+                <tr>
+                  <th>Domain</th>
+                  <th class="st-num" title="Times the page was rejected as a structural non-call">Structural rejects</th>
+                  <th class="st-num" title="Times processed without ever yielding an opportunity or aggregator">Total processed</th>
+                  <th>Last rejected</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="excl-domains-table-body">
+                <tr><td colspan="5" style="color:var(--text-muted);font-style:italic;padding:10px;">Loading…</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div id="excl-domains-pager" style="margin-top:8px;font-size:0.85em;"></div>
+        </div>
+        <div id="researcher-status"></div>
+        <h4 class="tool-subsection-title">Past researcher runs</h4>
+        <div id="researcher-runs"></div>
+        <div id="run-detail" class="run-detail hidden"></div>
+      </div>
+
+      <div class="tool-section">
+        <h3 class="tool-section-title">Pipeline <span id="pipeline-badge" class="pipeline-badge"></span></h3>
+        <div class="tool-controls pipeline-controls-row">
+          <div id="pipeline-info" class="tool-info"></div>
+        </div>
+        <div class="tool-controls">
+          <label class="inline-label">Prefilter
+            <select id="p-prefilter">
+              <option value="default" selected>Default — Llama 3.1 8B (Groq)</option>
+              <option value="groq">Groq — Llama 3.1 8B</option>
+              <option value="off">Off (skip prefilter)</option>
+            </select>
+          </label>
+          <label class="inline-label">Evaluate with
+            <select id="p-eval-model">
+              <option value="default" selected>Default — Llama 3.3 70B (Groq)</option>
+              <option value="groq">Groq — Llama 3.3 70B</option>
+              <option value="off">Off (prefilter only)</option>
+            </select>
+          </label>
+          <button id="btn-run-pipeline" disabled title="Not available in the public demo — requires the local scrape/extraction backend">Run</button>
+          <button id="btn-refresh-pipeline" class="btn-secondary">Refresh</button>
+        </div>
+        <div id="pipeline-breakdown"></div>
+        <div id="pipeline-status"></div>
+        <h4 class="tool-subsection-title">Pipeline runs <span id="pipeline-runs-pager" class="psb-page-nav"></span> <button class="run-detail-close" id="btn-refresh-pipeline-runs">Refresh</button></h4>
+        <div id="pipeline-runs" style="margin-top:12px"></div>
+      </div>
+
+      <div class="tool-section">
+        <h3 class="tool-section-title">Aggregator Scrapers</h3>
+        <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:10px;">
+          <button class="btn-scrape btn-scrape-all" id="btn-scrape-all" data-target="all" disabled title="Not available in the public demo — requires the local scrape/extraction backend">Run all</button>
+          <button class="btn-scrape" id="btn-scrape-generic" data-target="generic_agg" disabled title="Not available in the public demo — requires the local scrape/extraction backend">Run generics</button>
+          <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:0.85em;">
+            <input type="checkbox" id="scraper-mode-toggle">
+            <span>Skip known URLs</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:0.85em;">
+            <input type="checkbox" id="scraper-skip-safe-toggle">
+            <span>Auto-skip</span>
+          </label>
+          <span style="font-size:0.78em;color:var(--text-muted);">"Skip known" stops all sources early (risky for non-chronological). "Auto-skip" only skips proven ✓ safe sources.</span>
+          <button class="btn-secondary" id="btn-refresh-scrapers" style="margin-left:auto;">Refresh</button>
+        </div>
+        <div style="overflow-x:auto;">
+          <table class="scraper-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th class="st-num">Pages</th>
+                <th>Last run</th>
+                <th>Mode</th>
+                <th class="st-num">Fetched</th>
+                <th>Scraper</th>
+                <th>Listing order</th>
+                <th>Agg.</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="scraper-table-body">
+              <tr><td colspan="9" style="color:var(--text-muted);font-style:italic;padding:10px;">Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <h4 class="tool-subsection-title">Candidates <span id="agg-cand-badge" class="pipeline-badge" title="Aggregator candidates awaiting review"></span></h4>
+        <div style="overflow-x:auto;">
+          <table class="scraper-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Evidence</th>
+                <th class="st-num" title="Number of times LLM evaluation flagged this site as an aggregator">Flagged</th>
+                <th>First detected</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="agg-candidates-table-body">
+              <tr><td colspan="5" style="color:var(--text-muted);font-style:italic;padding:10px;">Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div id="scraper-status" style="margin-top:8px;font-size:0.87em;"></div>
+        <div id="scraper-runs" style="margin-top:12px"></div>
+      </div>
+    </section>
+  </main>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
