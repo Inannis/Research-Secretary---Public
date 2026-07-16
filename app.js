@@ -1,14 +1,11 @@
-// Literal port of web/static/app.js onto direct Turso access (Phase 7C,
-// redone 2026-06-23 — see DECISIONS.md). Every pure rendering/formatting
-// function below is copied verbatim from the local app; only the
-// data-fetching layer (apiFetch -> q()/exec()) is different. Operational
-// triggers (run researcher/pipeline/scrapers) have no live backend to call
-// in a static deployment, so those controls are disabled in the HTML
-// (see index.html) instead of being wired to any execution path.
+// Canonical review UI. GitHub Pages/Turso is the primary everyday interface;
+// the local FastAPI server serves this same module with a local data adapter
+// and additionally enables its operational controls.
 import { createClient } from "https://esm.sh/@libsql/client@0.17.4/web";
 
 const TURSO_URL = "libsql://artdb-inannis.aws-eu-west-1.turso.io";
 const TOKEN_KEY = "turso_auth_token";
+const LOCAL_MODE = window.__DATA_SOURCE__ === "local";
 let client = null;
 
 function getStoredToken() { return localStorage.getItem(TOKEN_KEY); }
@@ -18,8 +15,26 @@ async function tryConnect(token) {
   await client.execute({ sql: "SELECT 1", args: [] });
 }
 
-// Direct-SQL replacement for apiFetch() GETs: returns rows as plain objects.
+async function apiFetch(path, options = {}) {
+  const response = await fetch(path, options);
+  if (!response.ok) {
+    let detail = response.statusText;
+    try { detail = (await response.json()).detail || detail; } catch {}
+    throw new Error(detail);
+  }
+  return response.status === 204 ? null : response.json();
+}
+
+// Read adapter: Turso uses the browser client; local mode uses a restricted
+// FastAPI endpoint backed by the checked-out SQLite database.
 async function q(sql, args = []) {
+  if (LOCAL_MODE) {
+    return apiFetch("/ui/query", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sql, args }),
+    });
+  }
   const res = await client.execute({ sql, args });
   return res.rows.map((row) => {
     const obj = {};
@@ -28,8 +43,10 @@ async function q(sql, args = []) {
   });
 }
 
-// Direct-SQL replacement for apiFetch() writes.
+// Pages writes through Turso directly. Local mode uses the existing semantic
+// FastAPI endpoints so the local query adapter never needs write access.
 async function exec(sql, args = []) {
+  if (LOCAL_MODE) throw new Error("Local UI writes must use a FastAPI endpoint");
   return client.execute({ sql, args });
 }
 
@@ -45,7 +62,7 @@ function showLogin(errorMsg) {
   else { err.hidden = true; }
 }
 
-document.getElementById("login-form").addEventListener("submit", async (e) => {
+if (!LOCAL_MODE) document.getElementById("login-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const token = document.getElementById("login-token").value.trim();
   if (!token) return;
@@ -59,22 +76,18 @@ document.getElementById("login-form").addEventListener("submit", async (e) => {
   }
 });
 
-document.getElementById("logout-btn").addEventListener("click", () => {
+if (!LOCAL_MODE) document.getElementById("logout-btn").addEventListener("click", () => {
   localStorage.removeItem(TOKEN_KEY);
   client = null;
   showLogin();
 });
 
 // ───────────────────────────────────────────────────────────────────────────
-// Everything below this line is ported from web/static/app.js. Pure
-// rendering/formatting functions are verbatim; data-fetching functions are
-// rewritten onto q()/exec() instead of apiFetch(); operational-trigger
-// functions (run researcher/pipeline/scrapers) are not wired up at all —
-// their buttons are disabled in index.html (see the Researcher/Pipeline/
-// Aggregator sections near the end).
+// Rendering and review behavior lives here once. The runtime adapter above
+// selects Turso for Pages or local SQLite/REST for FastAPI.
 // ───────────────────────────────────────────────────────────────────────────
 
-const GROUPED_PER_PAGE = 100000; // fetch everything in one shot; see web/static/app.js's note on grouping across page boundaries
+const GROUPED_PER_PAGE = 100000; // fetch every row before grouping across page boundaries
 let currentFilters = { eligibility: "not_ineligible" };
 let currentPage = 1;
 let lastResult = null;
@@ -496,6 +509,7 @@ async function init() {
     bindFilters();
     bindNav();
     bindResearcherPanel();
+    bindLocalOperations();
   }
   loadLanguages();
   const startView = location.hash === "#researcher" ? "researcher" : "list";
@@ -795,7 +809,7 @@ function renderCell(key, opp) {
     case "added_by":    return fmtModel(opp.extraction_model) || "—";
     case "summary":     return opp.summary ? `<span title="${esc(opp.summary)}">${esc(opp.summary.slice(0, 80))}${opp.summary.length > 80 ? "…" : ""}</span>` : "—";
     case "notes":       return opp.notes ? `<span title="${esc(opp.notes)}">${esc(opp.notes.slice(0, 60))}${opp.notes.length > 60 ? "…" : ""}</span>` : "—";
-    case "url":         return opp.url ? `<a href="${esc(opp.url)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${esc(opp.url.replace(/^https?:\/\//, "").slice(0, 40))}…</a>` : "—";
+    case "url":         return opp.url ? `<a href="${safeUrl(opp.url)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${esc(opp.url.replace(/^https?:\/\//, "").slice(0, 40))}…</a>` : "—";
     case "working_lang": return fmtLanguages(opp.working_language) || "—";
     default:            return "";
   }
@@ -2156,7 +2170,7 @@ function renderDetail(opp) {
     </section>
 
     <div class="url-row">
-      <a href="${esc(opp.url || "")}" target="_blank" rel="noopener">${esc(opp.url || "—")}</a>
+      <a href="${safeUrl(opp.url)}" target="_blank" rel="noopener">${esc(opp.url || "—")}</a>
     </div>
 
     ${renderProvenance(opp.discovery_context)}
@@ -2211,7 +2225,11 @@ function renderDetail(opp) {
 
 async function dismissMismatch(id) {
   try {
-    await exec("UPDATE opportunities SET hard_data_mismatch = 0, manually_reviewed = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [id]);
+    if (LOCAL_MODE) {
+      await apiFetch(`/opportunities/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mismatch_acknowledged: true }) });
+    } else {
+      await exec("UPDATE opportunities SET hard_data_mismatch = 0, manually_reviewed = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [id]);
+    }
     const opp = await fetchOpportunity(id);
     renderDetail(opp);
   } catch (e) {
@@ -2221,7 +2239,11 @@ async function dismissMismatch(id) {
 
 async function dismissFlag(id) {
   try {
-    await exec("UPDATE opportunities SET flagged = 0, manually_reviewed = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [id]);
+    if (LOCAL_MODE) {
+      await apiFetch(`/opportunities/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ flag_acknowledged: true }) });
+    } else {
+      await exec("UPDATE opportunities SET flagged = 0, manually_reviewed = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [id]);
+    }
     const opp = await fetchOpportunity(id);
     renderDetail(opp);
   } catch (e) {
@@ -2248,7 +2270,11 @@ async function saveDetail(id) {
       const v = payload[k];
       return (Array.isArray(v)) ? JSON.stringify(v) : v;
     });
-    await exec(`UPDATE opportunities SET ${sets}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, [...args, id]);
+    if (LOCAL_MODE) {
+      await apiFetch(`/opportunities/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(Object.fromEntries(keys.map(key => [key, payload[key]]))) });
+    } else {
+      await exec(`UPDATE opportunities SET ${sets}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, [...args, id]);
+    }
     statusEl.textContent = "Saved.";
     statusEl.className = "save-ok";
     const updated = await fetchOpportunity(id);
@@ -2269,7 +2295,23 @@ function esc(s) {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+// Serialize a value to JSON then escape single-quotes so the result can be
+// safely embedded inside a single-quoted HTML attribute (onclick='…').
+// JSON.stringify does not escape ' — this does.
+function escJs(v) {
+  return JSON.stringify(v).replace(/'/g, "&#39;");
+}
+
+// Allow only http(s) URLs in href attributes; anything else (javascript:, data:,
+// blob:, …) is replaced with "#" so a crafted url field cannot execute code.
+function safeUrl(url) {
+  if (!url) return "";
+  const u = String(url).trim();
+  return /^https?:\/\//i.test(u) ? esc(u) : "#";
 }
 
 function fmtDate(s) {
@@ -2752,7 +2794,7 @@ let _runPanelMeta = null;
 
 function _psBtn(count, source, type, cls) {
   if (!count) return "";
-  return `<button class="ps-breakdown-btn ${cls}" onclick='showPipelineBreakdown(${JSON.stringify(source)},${JSON.stringify(type)})'>${count}</button>`;
+  return `<button class="ps-breakdown-btn ${cls}" onclick='showPipelineBreakdown(${escJs(source)},${escJs(type)})'>${count}</button>`;
 }
 
 async function showPipelineBreakdown(source, type) {
@@ -2794,7 +2836,7 @@ async function showPipelineBreakdown(source, type) {
       }
     }
     const items = Object.values(grouped).sort((a, b) => b.count - a.count);
-    const clearBtn = `<button class="psb-clear-btn" onclick='clearPipelineErrors(${JSON.stringify(source)})'>Clear errors</button>`;
+    const clearBtn = `<button class="psb-clear-btn" onclick='clearPipelineErrors(${escJs(source)})'>Clear errors</button>`;
     const html = items.map(e => {
       const datePart = e.last_seen ? `<span class="psb-meta">${esc(fmtDateTimeLocal(e.last_seen))}</span>` : "";
       const runPart = e.last_run_id ? `<span class="psb-meta">run #${e.last_run_id}</span>` : "";
@@ -2809,7 +2851,7 @@ async function showPipelineBreakdown(source, type) {
     }).join("") + `<div class="psb-actions">${clearBtn}</div>`;
     panel.innerHTML =
       `<div class="psb-title">${esc(`Errors — ${sourceLabel}`)} ` +
-      `<button class="run-detail-close" onclick='showPipelineBreakdown(${JSON.stringify(source)},${JSON.stringify(type)})'>close</button></div>` +
+      `<button class="run-detail-close" onclick='showPipelineBreakdown(${escJs(source)},${escJs(type)})'>close</button></div>` +
       html;
   } catch (e) {
     if (_psVisible === key) panel.innerHTML = `<em>Error: ${esc(e.message)}</em>`;
@@ -2819,7 +2861,10 @@ async function showPipelineBreakdown(source, type) {
 async function clearPipelineErrors(source) {
   if (!confirm(`Delete all error rows for "${source === "__all__" ? "all sources" : source}"? They will be re-scraped on the next scraper run.`)) return;
   try {
-    if (source !== "__all__") {
+    if (LOCAL_MODE) {
+      const qs = source !== "__all__" ? `?source=${encodeURIComponent(source)}` : "";
+      await apiFetch(`/pipeline/errors/clear${qs}`, { method: "POST" });
+    } else if (source !== "__all__") {
       if (source.startsWith("Researcher: ")) {
         const mode = source.slice("Researcher: ".length);
         await exec(`DELETE FROM raw_scrape WHERE error IS NOT NULL AND query_id IS NOT NULL
@@ -2838,7 +2883,7 @@ async function clearPipelineErrors(source) {
 }
 
 function _rejectedListHtml(rows, label, source, group, page = 1) {
-  const closeBtn = `<button class="run-detail-close" onclick='showRejectedList(${JSON.stringify(source)},${JSON.stringify(group)})'>close</button>`;
+  const closeBtn = `<button class="run-detail-close" onclick='showRejectedList(${escJs(source)},${escJs(group)})'>close</button>`;
   if (!rows.length) return `<div class="psb-title">${esc(label)} ${closeBtn}</div><em>None found.</em>`;
   const totalPages = Math.ceil(rows.length / _REJECTED_PAGE_SIZE);
   const p = Math.max(1, Math.min(page, totalPages));
@@ -2859,11 +2904,11 @@ function _rejectedListHtml(rows, label, source, group, page = 1) {
     const tdReason = hasReason ? `<td class="psbt-reason">${esc(r.rejection_reason || "")}</td>` : "";
     const tdType = hasType ? `<td class="psbt-kind">${esc(r.rejection_kind || "")}</td>` : "";
     return `<tr>
-      <td class="psbt-url"><a href="${esc(r.url)}" target="_blank" title="${esc(r.url)}">${esc(urlShort)}</a></td>
+      <td class="psbt-url"><a href="${safeUrl(r.url)}" target="_blank" title="${esc(r.url)}">${esc(urlShort)}</a></td>
       ${tdDate}${tdQuery}${tdSnip}${tdReason}${tdType}
     </tr>`;
   }).join("");
-  const srcJ = JSON.stringify(source), grpJ = JSON.stringify(group);
+  const srcJ = escJs(source), grpJ = escJs(group);
   const pageInfo = totalPages > 1 ? ` — page ${p}/${totalPages}` : "";
   const pageNav = totalPages > 1
     ? `<span class="psb-page-nav">
@@ -2940,6 +2985,8 @@ async function showRejectedList(source, group) {
 }
 
 function _aggregatorListHtml(rows, label, closeJs) {
+  // esc() so JSON.stringify's double quotes in closeJs don't terminate the
+  // double-quoted onclick attribute; the browser decodes &quot; back to " .
   const closeBtn = `<button class="run-detail-close" onclick="${esc(closeJs)}">close</button>`;
   if (!rows.length) return `<div class="psb-title">${esc(label)} ${closeBtn}</div><em>None found.</em>`;
   const statusClass = { candidate: "st-agg-candidate", confirmed: "st-agg-confirmed", rejected: "st-agg-rejected" };
@@ -2956,7 +3003,7 @@ function _aggregatorListHtml(rows, label, closeJs) {
          <button class="btn-agg-reject" style="padding:1px 6px;font-size:0.78em;margin-left:2px;" onclick="event.stopPropagation();aggAction(${r.source_id},'reject')">✗</button>`
       : "";
     html += `<tr${r.source_id ? ` data-id="${r.source_id}"` : ""}>
-                 <td class="psbt-url"><a href="${esc(r.url)}" target="_blank" title="${esc(r.url)}">${esc(urlShort)}</a> ${badge}</td>
+                 <td class="psbt-url"><a href="${safeUrl(r.url)}" target="_blank" title="${esc(r.url)}">${esc(urlShort)}</a> ${badge}</td>
                  <td class="psbt-date">${esc((r.scraped_at || "").slice(0, 10))}</td>
                  <td class="psbt-snip">${esc(note)}</td>
                  <td style="white-space:nowrap">${actions}</td>
@@ -3050,6 +3097,8 @@ async function showExtractedList(source) {
 }
 
 function _groupedUrlListHtml(rows, label, closeJs, isExtracted, page = 1) {
+  // esc() so JSON.stringify's double quotes in closeJs don't terminate the
+  // double-quoted onclick attribute; the browser decodes &quot; back to " .
   const closeBtn = `<button class="run-detail-close" onclick="${esc(closeJs)}">close</button>`;
   if (!rows.length) return `<div class="psb-title">${esc(label)} ${closeBtn}</div><em>None found.</em>`;
   const totalPages = Math.ceil(rows.length / _REJECTED_PAGE_SIZE);
@@ -3078,7 +3127,7 @@ function _groupedUrlListHtml(rows, label, closeJs, isExtracted, page = 1) {
         const tier = r.tier ? `<span class="tier-badge tier-${r.tier}" title="${esc(tierTitle(r.tier))}">T${r.tier}</span> ` : "";
         const link = r.id
           ? `<a href="#${r.id}" onclick="openDetail(${r.id});return false;">${title}</a>`
-          : `<a href="${esc(r.url)}" target="_blank" title="${esc(r.url)}">${title}</a>`;
+          : `<a href="${safeUrl(r.url)}" target="_blank" title="${esc(r.url)}">${title}</a>`;
         html += `<tr><td class="psbt-url">${tier}${link}</td>
                      <td class="psbt-date">${esc((r.scraped_at || "").slice(0, 10))}</td></tr>`;
       }
@@ -3096,7 +3145,7 @@ function _groupedUrlListHtml(rows, label, closeJs, isExtracted, page = 1) {
         const tdSnip = hasSnippet ? `<td class="psbt-snip">${esc((r.snippet || "").slice(0, 100))}</td>` : "";
         const tdReason = hasReason ? `<td class="psbt-reason">${esc(r.rejection_reason || "")}</td>` : "";
         const tdType = hasType ? `<td class="psbt-kind">${esc(r.rejection_kind || "")}</td>` : "";
-        html += `<tr><td class="psbt-url"><a href="${esc(r.url)}" target="_blank" title="${esc(r.url)}">${esc(urlShort)}</a></td>
+        html += `<tr><td class="psbt-url"><a href="${safeUrl(r.url)}" target="_blank" title="${esc(r.url)}">${esc(urlShort)}</a></td>
                      <td class="psbt-date">${esc((r.scraped_at || "").slice(0, 10))}</td>
                      ${tdSnip}${tdReason}${tdType}</tr>`;
       }
@@ -3338,9 +3387,13 @@ async function deletePipelineRun(runId) {
     const run = (await q("SELECT id, status FROM pipeline_runs WHERE id=?", [runId]))[0];
     if (!run) { alert("Run not found"); return; }
     if (run.status === "running") { alert("Cannot delete a running pipeline run"); return; }
-    await exec(`UPDATE raw_scrape SET processed=0, processed_at=NULL, skip_reason=NULL,
-      prefilter_signals=NULL, pipeline_run_id=NULL WHERE pipeline_run_id=?`, [runId]);
-    await exec("DELETE FROM pipeline_runs WHERE id=?", [runId]);
+    if (LOCAL_MODE) {
+      await apiFetch(`/pipeline/runs/${runId}`, { method: "DELETE" });
+    } else {
+      await exec(`UPDATE raw_scrape SET processed=0, processed_at=NULL, skip_reason=NULL,
+        prefilter_signals=NULL, pipeline_run_id=NULL WHERE pipeline_run_id=?`, [runId]);
+      await exec("DELETE FROM pipeline_runs WHERE id=?", [runId]);
+    }
     loadPipelineRuns();
     alert(`Run #${runId} deleted — rows reset for reprocessing.`);
   } catch (e) {
@@ -3415,22 +3468,23 @@ async function loadPipelineStatus() {
       const num = n => n > 0 ? n.toLocaleString() : "";
       function _rejBtn(count, src, group) {
         if (!count) return "";
-        return `<button class="ps-breakdown-btn ps-err-inline" onclick='showRejectedList(${JSON.stringify(src)},${JSON.stringify(group)})'>${count}</button>`;
+        return `<button class="ps-breakdown-btn ps-err-inline" onclick='showRejectedList(${escJs(src)},${escJs(group)})'>${count}</button>`;
       }
       function _aggBtn(count, src) {
         if (!count) return "";
-        return `<button class="ps-breakdown-btn ps-agg" onclick='showAggregatorList(${JSON.stringify(src)})'>${count}</button>`;
+        return `<button class="ps-breakdown-btn ps-agg" onclick='showAggregatorList(${escJs(src)})'>${count}</button>`;
       }
       const dataRows = bySource.map(r => {
         const src = r.source;
+        const runBtn = LOCAL_MODE ? ` <button class="ps-run-src-btn" title="Run this source through the pipeline" onclick='runPipelineForSource(${escJs(src)})'>▶</button>` : "";
         return `<tr>
-        <td class="ps-source">${esc(src)}</td>
+        <td class="ps-source">${esc(src)}${runBtn}</td>
         <td class="ps-num">${(r.total || 0).toLocaleString()}</td>
-        <td class="ps-num">${r.extracted > 0 ? `<button class="ps-breakdown-btn ps-done" onclick='showExtractedList(${JSON.stringify(src)})'>${r.extracted}</button>` : ""}</td>
-        <td class="ps-num">${r.prefilter_passed > 0 ? `<button class="ps-breakdown-btn ps-done" onclick='showRejectedList(${JSON.stringify(src)},"prefilter_passed")'>${r.prefilter_passed}</button>` : ""}</td>
+        <td class="ps-num">${r.extracted > 0 ? `<button class="ps-breakdown-btn ps-done" onclick='showExtractedList(${escJs(src)})'>${r.extracted}</button>` : ""}</td>
+        <td class="ps-num">${r.prefilter_passed > 0 ? `<button class="ps-breakdown-btn ps-done" onclick='showRejectedList(${escJs(src)},"prefilter_passed")'>${r.prefilter_passed}</button>` : ""}</td>
         <td class="ps-num">${_rejBtn(r.prefilter_dropped, src, "prefilter")}</td>
         <td class="ps-num">${_rejBtn(r.eval_dropped, src, "llm_rejected")}</td>
-        <td class="ps-num">${r.duplicates > 0 ? `<button class="ps-breakdown-btn ps-err-inline" onclick='showRejectedList(${JSON.stringify(src)},"dedup")'>${r.duplicates}</button>` : ""}</td>
+        <td class="ps-num">${r.duplicates > 0 ? `<button class="ps-breakdown-btn ps-err-inline" onclick='showRejectedList(${escJs(src)},"dedup")'>${r.duplicates}</button>` : ""}</td>
         <td class="ps-num">${_aggBtn(r.aggregators, src)}</td>
         <td class="ps-num">${_psBtn(r.errored, src, "error", "ps-err")}</td>
       </tr>`;
@@ -3561,7 +3615,7 @@ async function loadScraperTable() {
     };
     tbody.innerHTML = rows.map(row => {
       const nameHtml = row.url
-        ? `<a href="${esc(row.url)}" target="_blank" style="font-weight:500">${esc(row.name)}</a>`
+        ? `<a href="${safeUrl(row.url)}" target="_blank" style="font-weight:500">${esc(row.name)}</a>`
         : `<span style="font-weight:500">${esc(row.name)}</span>`;
       const pages = row.scrape_count > 0
         ? `<span style="font-variant-numeric:tabular-nums">${row.scrape_count.toLocaleString()}</span>`
@@ -3586,8 +3640,12 @@ async function loadScraperTable() {
         aggHtml = `<span class="st-agg-badge ${aggClass[row.aggregator_status] || ""}">${esc(row.aggregator_status)}</span>`;
       }
       const actionsHtml = row.blocked
-        ? `<span class="scraper-blocked-badge" style="font-size:0.8em;cursor:default;" title="${row.fail_count || 0} errors">⚠ blocked</span>`
-        : `<button class="st-run-btn btn-scrape" disabled title="Not available in the public demo — requires the local scrape/extraction backend">▶ Run</button>`;
+        ? (LOCAL_MODE && row.key
+          ? `<button class="scraper-blocked-badge" style="font-size:0.8em;" title="${row.fail_count || 0} errors — click to unblock" onclick='scraperTableUnblock(${escJs(row.key)}, this)'>⚠ blocked</button>`
+          : `<span class="scraper-blocked-badge" style="font-size:0.8em;cursor:default;" title="${row.fail_count || 0} errors">⚠ blocked</span>`)
+        : (LOCAL_MODE
+          ? `<button class="st-run-btn btn-scrape" data-target="${esc(row.key || "generic_agg")}" onclick='runScraper(${escJs(row.key || "generic_agg")})'>▶ Run</button>`
+          : `<button class="st-run-btn btn-scrape" disabled title="Operational runs are available from the local FastAPI console">▶ Run</button>`);
       return `<tr>
         <td>${nameHtml}</td><td class="st-num">${pages}</td><td>${lastRun}</td>
         <td style="font-size:0.85em">${mode}</td><td class="st-num">${fetched}</td>
@@ -3664,7 +3722,7 @@ async function loadAggregatorCandidatesTable() {
       const flagCount = sig.llm_flag_count || 0;
       const detected = c.aggregator_detected_at ? c.aggregator_detected_at.slice(0, 10) : "—";
       return `<tr data-id="${c.id}">
-        <td><a href="${esc(c.url)}" target="_blank" style="font-weight:500">${esc(c.name || c.url)}</a></td>
+        <td><a href="${safeUrl(c.url)}" target="_blank" style="font-weight:500">${esc(c.name || c.url)}</a></td>
         <td style="font-size:0.85em;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${evidenceHtml}</td>
         <td class="st-num">${flagCount || ""}</td>
         <td style="white-space:nowrap">${esc(detected)}</td>
@@ -3684,7 +3742,9 @@ async function aggAction(id, action) {
   if (row) row.style.opacity = "0.5";
   try {
     const status = action === "confirm" ? "confirmed" : "rejected";
-    if (action === "confirm") {
+    if (LOCAL_MODE) {
+      await apiFetch(`/aggregators/${id}/${action}`, { method: "POST" });
+    } else if (action === "confirm") {
       await exec("UPDATE sources SET aggregator_status='confirmed', source_type='aggregator' WHERE id=?", [id]);
     } else {
       await exec("UPDATE sources SET aggregator_status='rejected' WHERE id=?", [id]);
@@ -3786,7 +3846,11 @@ async function restoreExcludedDomain(domain) {
   const row = document.querySelector(`tr[data-domain="${domain}"]`);
   if (row) row.style.opacity = "0.5";
   try {
-    await exec("UPDATE domain_reputation SET manual_override='include', updated_at=datetime('now') WHERE domain=?", [domain]);
+    if (LOCAL_MODE) {
+      await apiFetch(`/domains/excluded/${encodeURIComponent(domain)}/restore`, { method: "POST" });
+    } else {
+      await exec("UPDATE domain_reputation SET manual_override='include', updated_at=datetime('now') WHERE domain=?", [domain]);
+    }
     loadExcludedDomainsTable();
   } catch (e) {
     if (row) row.style.opacity = "1";
@@ -3798,8 +3862,135 @@ async function restoreExcludedDomain(domain) {
 // Functions referenced via inline onclick="..."/oninput="..." in HTML strings
 // built by renderDetail()/renderTable() etc. A type="module" script's
 // top-level functions are NOT implicitly on window (unlike a classic
-// script, which is what web/static/index.html relies on) — without these,
+// script) — without these,
 // every such handler would fail with "X is not defined".
+// Local operational adapter. These stream transient progress only; durable
+// logs remain backend files and database records rather than browser state.
+function appendLogTo(logEl, html) {
+  if (!logEl) return;
+  const line = document.createElement("div");
+  line.innerHTML = html;
+  logEl.appendChild(line);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function localModeParams(prefilterId, evalId) {
+  const prefilter = document.getElementById(prefilterId)?.value || "default";
+  const evaluate = document.getElementById(evalId)?.value || "default";
+  return {
+    extractMode: evaluate === "off" ? "prefilter" : prefilter === "off" ? "max" : "quality",
+    prefilterProvider: prefilter === "default" || prefilter === "off" ? null : prefilter,
+    extractProvider: evaluate === "default" || evaluate === "off" || evaluate === "claude" ? null : evaluate,
+  };
+}
+
+function localEventLog(log, event) {
+  const data = event.data || {};
+  const message = data.message || data.query || data.source || data.name ||
+    (data.url ? data.url.replace(/^https?:\/\//, "").slice(0, 90) : "");
+  const summary = message || Object.entries(data).filter(([, value]) => typeof value !== "object").map(([key, value]) => `${key}: ${value}`).join(" · ");
+  const cls = event.type.includes("error") ? "run-err" : event.type === "done" ? "run-ok" : "log-info";
+  appendLogTo(log, `<span class="${cls}">${esc(event.type.replace(/_/g, " "))}${summary ? ` — ${esc(summary)}` : ""}</span>`);
+}
+
+function listenToStream(path, { log, onDone, onError }) {
+  const stream = new EventSource(path);
+  stream.onmessage = event => {
+    let parsed;
+    try { parsed = JSON.parse(event.data); } catch { return; }
+    localEventLog(log, parsed);
+    if (parsed.type === "done") { stream.close(); onDone(parsed.data || {}); }
+    if (parsed.type === "error") { stream.close(); onError(parsed.data || {}); }
+  };
+  stream.onerror = () => { stream.close(); onError({ message: "Connection lost — check server logs" }); };
+  return stream;
+}
+
+function runResearcher() {
+  const button = document.getElementById("btn-run-researcher"), status = document.getElementById("researcher-status"), log = document.getElementById("researcher-log");
+  const { extractMode, prefilterProvider, extractProvider } = localModeParams("r-prefilter", "r-eval-model");
+  const params = new URLSearchParams({ mode: document.getElementById("r-mode").value, extract_mode: extractMode });
+  const limit = document.getElementById("r-limit").value;
+  if (limit) params.set("limit", limit);
+  if (prefilterProvider) params.set("prefilter_provider", prefilterProvider);
+  if (extractProvider) params.set("extract_provider", extractProvider);
+  button.disabled = true; log.innerHTML = ""; status.innerHTML = '<span class="run-running">Researcher running…</span>';
+  listenToStream(`/researcher/run/stream?${params}`, {
+    log,
+    onDone: data => { button.disabled = false; status.innerHTML = `<span class="run-ok">Completed: ${data.new_opportunities ?? 0} new opportunities.</span>`; loadResearcherRuns(); loadResearcherBudget(); loadStats(); },
+    onError: data => { button.disabled = false; status.innerHTML = `<span class="run-err">Failed: ${esc(data.message || "unknown error")}</span>`; },
+  });
+}
+
+let _localPipelineStream = null;
+function runPipeline() {
+  const button = document.getElementById("btn-run-pipeline"), status = document.getElementById("pipeline-status"), log = document.getElementById("pipeline-log");
+  const { extractMode, prefilterProvider, extractProvider } = localModeParams("p-prefilter", "p-eval-model");
+  const params = new URLSearchParams({ extract_mode: extractMode });
+  if (prefilterProvider) params.set("prefilter_provider", prefilterProvider);
+  if (extractProvider) params.set("extract_provider", extractProvider);
+  log.innerHTML = ""; button.textContent = "Stop"; button.onclick = stopPipeline; status.innerHTML = '<span class="run-running">Pipeline running…</span>';
+  _localPipelineStream = listenToStream(`/pipeline/run/stream?${params}`, {
+    log,
+    onDone: data => { _localPipelineStream = null; button.textContent = "Run"; button.onclick = runPipeline; status.innerHTML = `<span class="run-ok">Done: ${data.total_new ?? 0} new/updated.</span>`; refreshPipelineViews(); },
+    onError: data => { _localPipelineStream = null; button.textContent = "Run"; button.onclick = runPipeline; status.innerHTML = `<span class="run-err">Failed: ${esc(data.message || "unknown error")}</span>`; loadPipelineRuns(); },
+  });
+}
+
+function stopPipeline() {
+  _localPipelineStream?.close(); _localPipelineStream = null; fetch("/pipeline/abort", { method: "POST" });
+  const button = document.getElementById("btn-run-pipeline");
+  button.textContent = "Run"; button.onclick = runPipeline;
+  document.getElementById("pipeline-status").innerHTML = '<span class="run-err">Stopped.</span>';
+}
+
+function runPipelineForSource(source) {
+  const status = document.getElementById("pipeline-status"), log = document.getElementById("pipeline-log");
+  const { extractMode, prefilterProvider, extractProvider } = localModeParams("p-prefilter", "p-eval-model");
+  const params = new URLSearchParams({ source, extract_mode: extractMode });
+  if (prefilterProvider) params.set("prefilter_provider", prefilterProvider);
+  if (extractProvider) params.set("extract_provider", extractProvider);
+  log.innerHTML = ""; status.innerHTML = `<span class="run-running">Running ${esc(source)}…</span>`;
+  listenToStream(`/pipeline/run/stream?${params}`, {
+    log,
+    onDone: data => { status.innerHTML = `<span class="run-ok">Done: ${data.total_new ?? 0} new/updated.</span>`; refreshPipelineViews(); },
+    onError: data => { status.innerHTML = `<span class="run-err">Failed: ${esc(data.message || "unknown error")}</span>`; },
+  });
+}
+
+function refreshPipelineViews() { loadPipelineStatus(); loadPipelineRuns(); loadScraperTable(); loadAggregatorCandidatesTable(); loadScraperRuns(); loadStats(); }
+
+function runScraper(target) {
+  const buttons = document.querySelectorAll(".btn-scrape"), status = document.getElementById("scraper-status"), log = document.getElementById("scraper-log");
+  const mode = document.getElementById("scraper-mode-toggle").checked ? "newest" : "all";
+  const params = new URLSearchParams({ target, mode });
+  if (document.getElementById("scraper-skip-safe-toggle").checked) params.set("skip_newest_safe", "true");
+  buttons.forEach(button => { button.disabled = true; }); log.innerHTML = ""; status.innerHTML = '<span class="run-running">Scrapers running…</span>';
+  listenToStream(`/scraper/run/stream?${params}`, {
+    log,
+    onDone: data => { buttons.forEach(button => { button.disabled = false; }); status.innerHTML = `<span class="run-ok">Done — fetched: ${data.fetched ?? 0}, skipped: ${data.skipped ?? 0}, errors: ${data.errors ?? 0}</span>`; refreshPipelineViews(); },
+    onError: data => { buttons.forEach(button => { button.disabled = false; }); status.innerHTML = `<span class="run-err">Failed: ${esc(data.message || "unknown error")}</span>`; },
+  });
+}
+
+async function scraperTableUnblock(target, button) {
+  button.textContent = "unblocking…";
+  try { await apiFetch(`/scraper/unblock/${target}`, { method: "POST" }); loadScraperTable(); }
+  catch (error) { button.textContent = "⚠ blocked"; alert(`Unblock failed: ${error.message}`); }
+}
+
+function bindLocalOperations() {
+  if (!LOCAL_MODE) return;
+  document.getElementById("login-screen").hidden = true; document.getElementById("app").hidden = false;
+  document.getElementById("logout-btn").hidden = true;
+  const researcher = document.getElementById("btn-run-researcher"), pipeline = document.getElementById("btn-run-pipeline");
+  researcher.disabled = false; researcher.removeAttribute("title"); researcher.onclick = runResearcher;
+  pipeline.disabled = false; pipeline.removeAttribute("title"); pipeline.onclick = runPipeline;
+  document.querySelectorAll(".btn-scrape").forEach(button => { button.disabled = false; button.removeAttribute("title"); });
+  document.getElementById("btn-scrape-all").onclick = () => runScraper("all");
+  document.getElementById("btn-scrape-generic").onclick = () => runScraper("generic_agg");
+}
+
 window.autoResizeField = autoResizeField;
 window.closeDetailPanel = closeDetailPanel;
 window.dismissFlag = dismissFlag;
@@ -3825,10 +4016,16 @@ window.showDigest = showDigest;
 window.loadPipelineRuns = loadPipelineRuns;
 window.deletePipelineRun = deletePipelineRun;
 window.clearPipelineErrors = clearPipelineErrors;
+window.runPipelineForSource = runPipelineForSource;
+window.runScraper = runScraper;
+window.scraperTableUnblock = scraperTableUnblock;
 
 // ── Boot ──────────────────────────────────────────────────────────────────
 const _stored = getStoredToken();
-if (_stored) {
+if (LOCAL_MODE) {
+  showApp();
+  init();
+} else if (_stored) {
   tryConnect(_stored).then(() => { showApp(); return init(); }).catch(() => {
     localStorage.removeItem(TOKEN_KEY);
     showLogin();

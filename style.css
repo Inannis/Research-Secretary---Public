@@ -554,6 +554,14 @@ pre.raw-text { white-space: pre-wrap; word-break: break-word; font-size: 12px;
 .st-run-btn:hover { background: #047857; }
 .st-run-btn:disabled { background: #9ca3af; cursor: not-allowed; }
 
+/* Local FastAPI mode uses these for transient SSE progress. */
+.researcher-log { background: #0f172a; color: #e2e8f0; font-family: monospace;
+                  font-size: 12px; border-radius: 4px; padding: 10px 12px;
+                  max-height: 280px; overflow-y: auto; margin-bottom: 16px;
+                  display: none; line-height: 1.7; }
+.researcher-log:not(:empty) { display: block; }
+.log-info { color: #a3e635; }
+
 /* ── Aggregator candidate cards ─────────────────────────────────────────── */
 .agg-card { border: 1px solid #e5e7eb; border-radius: 6px; padding: 10px 12px;
             margin-bottom: 8px; background: #fff; }

@@ -4,13 +4,12 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Artist Residency DB</title>
-  <link rel="stylesheet" href="style.css?v=20260702f">
+  <link rel="stylesheet" href="style.css?v=20260716a">
 </head>
 <body>
 
-  <!-- Login screen: shown until a Turso auth token is present. The local app
-       has no auth (it's local-only); this is the one structural addition
-       the static deployment needs. No secret is baked into this page. -->
+  <!-- GitHub Pages is the primary review interface.  The local FastAPI server
+       serves this same page with a local adapter and operational controls. -->
   <div id="login-screen" class="login-screen">
     <form id="login-form" class="login-form">
       <h1>Artist Residency DB</h1>
@@ -224,7 +223,7 @@
           <label>Limit (queries/sources)
             <input id="r-limit" type="number" min="1" placeholder="leave blank for default">
           </label>
-          <button id="btn-run-researcher" disabled title="Not available in the public demo — requires the local scrape/extraction backend">Run</button>
+          <button id="btn-run-researcher" disabled title="Available in the local FastAPI console — requires the local research/extraction backend">Run</button>
           <button id="btn-toggle-excluded-domains" class="btn-secondary">Excluded Domains</button>
         </div>
         <div id="researcher-budget" class="researcher-budget"></div>
@@ -249,6 +248,7 @@
           <div id="excl-domains-pager" style="margin-top:8px;font-size:0.85em;"></div>
         </div>
         <div id="researcher-status"></div>
+        <div id="researcher-log" class="researcher-log"></div>
         <h4 class="tool-subsection-title">Past researcher runs</h4>
         <div id="researcher-runs"></div>
         <div id="run-detail" class="run-detail hidden"></div>
@@ -274,11 +274,12 @@
               <option value="off">Off (prefilter only)</option>
             </select>
           </label>
-          <button id="btn-run-pipeline" disabled title="Not available in the public demo — requires the local scrape/extraction backend">Run</button>
+          <button id="btn-run-pipeline" disabled title="Available in the local FastAPI console — requires the local scrape/extraction backend">Run</button>
           <button id="btn-refresh-pipeline" class="btn-secondary">Refresh</button>
         </div>
         <div id="pipeline-breakdown"></div>
         <div id="pipeline-status"></div>
+        <div id="pipeline-log" class="researcher-log"></div>
         <h4 class="tool-subsection-title">Pipeline runs <span id="pipeline-runs-pager" class="psb-page-nav"></span> <button class="run-detail-close" id="btn-refresh-pipeline-runs">Refresh</button></h4>
         <div id="pipeline-runs" style="margin-top:12px"></div>
       </div>
@@ -286,8 +287,8 @@
       <div class="tool-section">
         <h3 class="tool-section-title">Aggregator Scrapers</h3>
         <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:10px;">
-          <button class="btn-scrape btn-scrape-all" id="btn-scrape-all" data-target="all" disabled title="Not available in the public demo — requires the local scrape/extraction backend">Run all</button>
-          <button class="btn-scrape" id="btn-scrape-generic" data-target="generic_agg" disabled title="Not available in the public demo — requires the local scrape/extraction backend">Run generics</button>
+          <button class="btn-scrape btn-scrape-all" id="btn-scrape-all" data-target="all" disabled title="Available in the local FastAPI console — requires the local scrape/extraction backend">Run all</button>
+          <button class="btn-scrape" id="btn-scrape-generic" data-target="generic_agg" disabled title="Available in the local FastAPI console — requires the local scrape/extraction backend">Run generics</button>
           <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:0.85em;">
             <input type="checkbox" id="scraper-mode-toggle">
             <span>Skip known URLs</span>
@@ -338,12 +339,13 @@
         </div>
 
         <div id="scraper-status" style="margin-top:8px;font-size:0.87em;"></div>
+        <div id="scraper-log" class="researcher-log"></div>
         <div id="scraper-runs" style="margin-top:12px"></div>
       </div>
     </section>
   </main>
   </div>
 
-  <script type="module" src="app.js?v=20260702f"></script>
+  <script type="module" src="app.js?v=20260716a"></script>
 </body>
 </html>
