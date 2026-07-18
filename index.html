@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Artist Residency DB</title>
-  <link rel="stylesheet" href="style.css?v=20260716a">
+  <link rel="stylesheet" href="style.css?v=20260717a">
 </head>
 <body>
 
@@ -223,6 +223,9 @@
           <label>Limit (queries/sources)
             <input id="r-limit" type="number" min="1" placeholder="leave blank for default">
           </label>
+          <label class="inline-check" title="Search 30–50 results per query; modes 3 and 5 use this by default">
+            <input id="r-deep" type="checkbox"> Deep search
+          </label>
           <button id="btn-run-researcher" disabled title="Available in the local FastAPI console — requires the local research/extraction backend">Run</button>
           <button id="btn-toggle-excluded-domains" class="btn-secondary">Excluded Domains</button>
         </div>
@@ -346,6 +349,6 @@
   </main>
   </div>
 
-  <script type="module" src="app.js?v=20260716a"></script>
+  <script type="module" src="app.js?v=20260717a"></script>
 </body>
 </html>

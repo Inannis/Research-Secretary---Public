@@ -87,10 +87,12 @@ if (!LOCAL_MODE) document.getElementById("logout-btn").addEventListener("click",
 // selects Turso for Pages or local SQLite/REST for FastAPI.
 // ───────────────────────────────────────────────────────────────────────────
 
-const GROUPED_PER_PAGE = 100000; // fetch every row before grouping across page boundaries
+const GROUPED_PER_PAGE = 100000; // retain every row once background loading completes
+const INITIAL_LIST_ITEMS = 50;
 let currentFilters = { eligibility: "not_ineligible" };
 let currentPage = 1;
 let lastResult = null;
+let _opportunitiesLoadVersion = 0;
 const LS_SORT_KEY = "artdb_sort";
 function loadSort() {
   try { const s = localStorage.getItem(LS_SORT_KEY); if (s) return JSON.parse(s); } catch {}
@@ -527,8 +529,9 @@ async function init() {
     showView("list");
     history.replaceState({ view: "list" }, "", "#opportunities");
   }
-  await loadStats();
-  await loadOpportunities(1);
+  // Header metadata must not hold up the first usable list render.
+  void loadStats();
+  void loadOpportunities(1);
 }
 
 function showView(name) {
@@ -586,13 +589,13 @@ function bindNav() {
 
 async function loadStats() {
   try {
-    const total = (await q("SELECT COUNT(*) AS n FROM opportunities WHERE status != 'archived'"))[0].n;
-    const byTier = await q(
-      "SELECT COALESCE(manual_tier, llm_tier) AS k, COUNT(*) AS n FROM opportunities WHERE status != 'archived' GROUP BY 1"
-    );
-    const unreviewed = (await q(
-      "SELECT COUNT(*) AS n FROM opportunities WHERE manually_reviewed = 0 AND status != 'archived'"
-    ))[0].n;
+    const [totalRows, byTier, unreviewedRows] = await Promise.all([
+      q("SELECT COUNT(*) AS n FROM opportunities WHERE status != 'archived'"),
+      q("SELECT COALESCE(manual_tier, llm_tier) AS k, COUNT(*) AS n FROM opportunities WHERE status != 'archived' GROUP BY 1"),
+      q("SELECT COUNT(*) AS n FROM opportunities WHERE manually_reviewed = 0 AND status != 'archived'"),
+    ]);
+    const total = totalRows[0].n;
+    const unreviewed = unreviewedRows[0].n;
     const t = {};
     byTier.forEach(r => { t[r.k] = r.n; });
     document.getElementById("stats-bar").innerHTML =
@@ -636,7 +639,6 @@ const _LIST_FIELDS = `
     o.source_language, o.working_language, o.discipline_note,
     o.scope_note,
     o.recurrence_interval, o.age_note, o.eligibility_note,
-    o.llm_output_json,
     COALESCE(s.name, ql.mode) AS source_name
 `;
 
@@ -720,37 +722,51 @@ function _buildWhere(filters) {
   return { where: conditions.join(" AND "), params };
 }
 
-async function fetchOpportunitiesList(filters, page, perPage) {
+function opportunityListQuery(filters) {
   const { where, params } = _buildWhere(filters);
   const sortKey = filters.sort_by || "";
   const sortCol = _SORT_COLS[sortKey] || "COALESCE(o.manual_tier, o.llm_tier)";
   const dir = filters.sort_dir === "desc" ? "DESC" : "ASC";
   const order = (sortKey && sortKey !== "tier")
-    ? `${sortCol} ${dir} NULLS LAST, COALESCE(o.manual_tier, o.llm_tier) ASC NULLS LAST`
-    : `COALESCE(o.manual_tier, o.llm_tier) ${dir} NULLS LAST, o.deadline ASC NULLS LAST`;
+    ? `${sortCol} ${dir} NULLS LAST, COALESCE(o.manual_tier, o.llm_tier) ASC NULLS LAST, o.id ASC`
+    : `COALESCE(o.manual_tier, o.llm_tier) ${dir} NULLS LAST, o.deadline ASC NULLS LAST, o.id ASC`;
 
-  const total = (await q(`SELECT COUNT(*) AS n FROM opportunities o ${_JOINS} WHERE ${where}`, params))[0].n;
-  const offset = (page - 1) * perPage;
-  const items = await q(
+  return { where, params, order };
+}
+
+async function fetchOpportunitiesCount(filters) {
+  const { where, params } = opportunityListQuery(filters);
+  return (await q(`SELECT COUNT(*) AS n FROM opportunities o ${_JOINS} WHERE ${where}`, params))[0].n;
+}
+
+async function fetchOpportunityItems(filters, offset, limit) {
+  const { where, params, order } = opportunityListQuery(filters);
+  return q(
     `SELECT ${_LIST_FIELDS} FROM opportunities o ${_JOINS} WHERE ${where} ORDER BY ${order} LIMIT ? OFFSET ?`,
-    [...params, perPage, offset]
+    [...params, limit, offset]
   );
-  for (const d of items) {
-    if (d.llm_output_json && typeof d.llm_output_json === "string") {
-      try { d.llm_output_json = JSON.parse(d.llm_output_json); } catch (_) {}
-    }
-  }
-  return { total, page, per_page: perPage, items };
 }
 
 async function loadOpportunities(page = 1) {
+  const loadVersion = ++_opportunitiesLoadVersion;
   currentPage = 1; // always fetching everything — see GROUPED_PER_PAGE note above
   try {
     const filters = { ...currentFilters };
     if (sortBy) { filters.sort_by = sortBy; filters.sort_dir = sortDir; }
-    lastResult = await fetchOpportunitiesList(filters, 1, GROUPED_PER_PAGE);
+    const initialItems = await fetchOpportunityItems(filters, 0, INITIAL_LIST_ITEMS);
+    if (loadVersion !== _opportunitiesLoadVersion) return;
+    lastResult = { total: null, page: 1, per_page: GROUPED_PER_PAGE, items: initialItems, loading: true };
+    renderTable(lastResult);
+
+    const [total, remainingItems] = await Promise.all([
+      fetchOpportunitiesCount(filters),
+      fetchOpportunityItems(filters, INITIAL_LIST_ITEMS, GROUPED_PER_PAGE - INITIAL_LIST_ITEMS),
+    ]);
+    if (loadVersion !== _opportunitiesLoadVersion) return;
+    lastResult = { total, page: 1, per_page: GROUPED_PER_PAGE, items: initialItems.concat(remainingItems), loading: false };
     renderTable(lastResult);
   } catch (e) {
+    if (loadVersion !== _opportunitiesLoadVersion) return;
     document.getElementById("opp-tbody").innerHTML =
       `<tr><td colspan="99">Error loading data: ${esc(e.message)}</td></tr>`;
   }
@@ -1073,8 +1089,10 @@ function renderTable(data) {
 
   const tbody = document.getElementById("opp-tbody");
   tbody.innerHTML = "";
-  const total_pages = Math.ceil(data.total / data.per_page);
-  document.getElementById("result-info").textContent =
+  const total_pages = Number.isFinite(data.total) ? Math.ceil(data.total / data.per_page) : null;
+  if (data.loading) {
+    document.getElementById("result-info").textContent = `Showing first ${data.items.length} results while grouped view completes…`;
+  } else document.getElementById("result-info").textContent =
     `${data.total} result${data.total !== 1 ? "s" : ""} — page ${data.page} of ${total_pages || 1}`;
 
   const totalCols = colCount + (hasGcol ? 1 : 0) + (hasGcol2 ? 1 : 0);
@@ -1304,6 +1322,10 @@ function parseJsonField(val) {
 }
 
 function renderPagination(data) {
+  if (data.loading || !Number.isFinite(data.total)) {
+    document.getElementById("pagination").innerHTML = "";
+    return;
+  }
   const total_pages = Math.ceil(data.total / data.per_page);
   const el = document.getElementById("pagination");
   if (total_pages <= 1) { el.innerHTML = ""; return; }
@@ -3555,6 +3577,7 @@ const _SCRAPER_REGISTRY = {
   transartists: "TransArtists",
   eflux: "e-flux Announcements",
   touring_artists_info: "touring artists — Residenzen",
+  touring_artists_foerder: "touring artists — Förderdatenbank",
   kunstfonds: "Stiftung Kunstfonds",
   igbk: "IGBK — Internationale Gesellschaft der Bildenden Künste",
   igbildendekunst: "IG Bildende Kunst",
@@ -3565,10 +3588,21 @@ async function loadScraperTable() {
   if (!tbody) return;
   try {
     const sourceRows = await q(
-      "SELECT id, name, url, aggregator_status, listing_order, newest_safe, fail_count, blocked FROM sources"
+      "SELECT id, name, url, aggregator_status, aggregator_signals, listing_order, newest_safe, fail_count, blocked FROM sources"
     );
     const byName = {};
     for (const s of sourceRows) byName[s.name] = s;
+
+    // Link-directory classification lives in aggregator_signals.directory.status
+    // (see architecture.md "Link directories") — a directory lists other domains'
+    // calls as blurb + outbound link, unlike a hosting aggregator.
+    const dirStatus = (s) => {
+      if (!s || !s.aggregator_signals) return "none";
+      try {
+        const d = JSON.parse(s.aggregator_signals).directory;
+        return (d && d.status) || "none";
+      } catch (_) { return "none"; }
+    };
 
     const rows = [];
     for (const [key, dbName] of Object.entries(_SCRAPER_REGISTRY)) {
@@ -3592,11 +3626,21 @@ async function loadScraperTable() {
         fail_count: source ? source.fail_count : 0,
         blocked: source ? !!source.blocked : false,
         aggregator_status: source ? source.aggregator_status : "none",
+        directory_status: dirStatus(source),
       });
     }
-    const knownNames = new Set(Object.values(_SCRAPER_REGISTRY));
+    const customSourceNames = new Set(Object.values(_SCRAPER_REGISTRY));
+    const customDomains = new Set(sourceRows
+      .filter(source => customSourceNames.has(source.name))
+      .map(source => {
+        try { return new URL(source.url).hostname.toLowerCase().replace(/^www\./, ""); }
+        catch (_) { return ""; }
+      })
+      .filter(Boolean));
     for (const s of sourceRows) {
-      if (s.aggregator_status !== "confirmed" || knownNames.has(s.name)) continue;
+      let domain = "";
+      try { domain = new URL(s.url).hostname.toLowerCase().replace(/^www\./, ""); } catch (_) {}
+      if (s.aggregator_status !== "confirmed" || customDomains.has(domain)) continue;
       const scrapeCount = (await q("SELECT COUNT(*) AS n FROM raw_scrape WHERE source_id=?", [s.id]))[0].n;
       rows.push({
         key: null, name: s.name, url: s.url,
@@ -3605,6 +3649,7 @@ async function loadScraperTable() {
         listing_order: s.listing_order, newest_safe: !!s.newest_safe,
         fail_count: s.fail_count, blocked: !!s.blocked,
         aggregator_status: "confirmed",
+        directory_status: dirStatus(s),
       });
     }
     rows.sort((a, b) => a.name.localeCompare(b.name));
@@ -3628,6 +3673,16 @@ async function loadScraperTable() {
       let scraperHtml = '<span style="color:var(--text-muted)">—</span>';
       if (row.scraper_type === "custom") scraperHtml = '<span class="st-type-badge st-type-custom">Custom</span>';
       if (row.scraper_type === "generic") scraperHtml = '<span class="st-type-badge st-type-generic">Generic</span>';
+      // A directory lists other domains' calls as blurb + outbound link, so its
+      // rows need a second fetch to get real content — worth distinguishing from
+      // a hosting aggregator at a glance.
+      if (row.directory_status && row.directory_status !== "none" && row.directory_status !== "rejected") {
+        const pending = row.directory_status === "candidate";
+        scraperHtml += ` <span class="st-type-badge st-type-directory${pending ? " st-type-directory-pending" : ""}"`
+          + ` title="Link directory${pending ? " (candidate — needs confirmation)" : ""}:`
+          + ` lists other domains' calls as blurb + outbound link; targets are fetched separately">`
+          + `Directory${pending ? "?" : ""}</span>`;
+      }
       let orderHtml = '<span style="color:var(--text-muted)">—</span>';
       if (row.listing_order) {
         const label = orderLabels[row.listing_order] || row.listing_order.replace(/_/g, " ");
@@ -3698,13 +3753,71 @@ async function loadScraperRuns() {
 
 // ── Aggregator candidates ───────────────────────────────────────────────────
 
+function _candidateEntries(root, stored, examples) {
+  let values = [];
+  for (const raw of [stored, examples]) {
+    try {
+      const parsed = typeof raw === "string" ? JSON.parse(raw || "[]") : raw;
+      if (Array.isArray(parsed) && parsed.length) { values = parsed; break; }
+    } catch (_) {}
+  }
+  let rootUrl;
+  try { rootUrl = new URL(root); } catch (_) { return values.filter(v => typeof v === "string"); }
+  const domain = rootUrl.hostname.toLowerCase().replace(/^www\./, "");
+  const result = [], seen = new Set();
+  for (const value of [...values, root]) {
+    try {
+      const url = new URL(value);
+      if (url.hostname.toLowerCase().replace(/^www\./, "") !== domain) continue;
+      url.hash = "";
+      const key = `${domain}|${url.pathname.replace(/\/$/, "") || "/"}|${url.search}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.push(url.toString());
+    } catch (_) {}
+  }
+  return result;
+}
+
+function _entryInputHtml(value = "") {
+  return `<div class="agg-entry-row" style="display:flex;gap:4px;margin-top:3px;">
+    <input class="agg-entry-url" type="url" value="${esc(value)}" style="min-width:260px;flex:1;font-size:0.8em;">
+    <button class="run-detail-close" type="button" onclick="this.parentElement.remove()" title="Remove entry URL">&times;</button>
+  </div>`;
+}
+
+function addAggregatorEntry(id, value = "") {
+  const editor = document.getElementById(`agg-entries-${id}`);
+  if (editor) editor.insertAdjacentHTML("beforeend", _entryInputHtml(value));
+}
+
+function _collectAggregatorEntries(id) {
+  const editor = document.getElementById(`agg-entries-${id}`);
+  if (!editor) return [];
+  const values = [...editor.querySelectorAll(".agg-entry-url")].map(el => el.value.trim()).filter(Boolean);
+  return _candidateEntries(editor.dataset.root, values, []);
+}
+
+function _probeHtml(report, id) {
+  if (!report || !Array.isArray(report.entries)) return "";
+  const rows = report.entries.map(entry => {
+    const state = entry.fetch_ok ? `${entry.links_found || 0} links` : `fetch failed${entry.http_status ? ` (${entry.http_status})` : ""}`;
+    const flags = [entry.pagination_style, entry.thin_page ? "thin page" : ""].filter(Boolean).join(", ");
+    return `<li><a href="${safeUrl(entry.entry_url)}" target="_blank">${esc(entry.entry_url)}</a>: ${esc(state)}${flags ? ` â€” ${esc(flags)}` : ""}</li>`;
+  }).join("");
+  const suggestions = (report.suggested_entry_urls || []).map(url => LOCAL_MODE
+    ? `<button class="run-detail-close" type="button" onclick='addAggregatorEntry(${id},${escJs(url)})'>+ ${esc(url)}</button>`
+    : `<span>${esc(url)}</span>`).join(" ");
+  return `<div style="margin-top:6px;font-size:0.78em;"><strong>Last probe${report.probed_at ? ` (${esc(report.probed_at.slice(0, 16).replace("T", " "))})` : ""}</strong><ul style="margin:3px 0;padding-left:18px;">${rows}</ul>${suggestions ? `<div>Suggested: ${suggestions}</div>` : ""}</div>`;
+}
+
 async function loadAggregatorCandidatesTable() {
   const tbody = document.getElementById("agg-candidates-table-body");
   const badge = document.getElementById("agg-cand-badge");
   if (!tbody) return;
   try {
     const candidates = await q(`
-      SELECT id, url, name, aggregator_signals, aggregator_detected_at
+      SELECT id, url, name, aggregator_signals, listing_urls, aggregator_detected_at
       FROM sources WHERE aggregator_status = 'candidate' ORDER BY aggregator_detected_at DESC
     `);
     if (badge) {
@@ -3721,12 +3834,22 @@ async function loadAggregatorCandidatesTable() {
       const evidenceHtml = sig.aggregator_note ? esc(sig.aggregator_note) : "no note yet";
       const flagCount = sig.llm_flag_count || 0;
       const detected = c.aggregator_detected_at ? c.aggregator_detected_at.slice(0, 10) : "—";
+      const entries = _candidateEntries(c.url, c.listing_urls, sig.example_urls || []);
+      const entryEditor = entries.map(value => _entryInputHtml(value)).join("");
+      const probeButton = LOCAL_MODE
+        ? `<button class="btn-secondary" style="padding:2px 8px;font-size:0.8em;" onclick="probeAggregator(${c.id})" title="Fetch listing pages without scraping details">Probe</button>`
+        : `<span style="font-size:0.75em;color:var(--text-muted);" title="Run probes from the local FastAPI console">Probe: local only</span>`;
       return `<tr data-id="${c.id}">
         <td><a href="${safeUrl(c.url)}" target="_blank" style="font-weight:500">${esc(c.name || c.url)}</a></td>
-        <td style="font-size:0.85em;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${evidenceHtml}</td>
+        <td style="font-size:0.85em;min-width:360px;">${evidenceHtml}
+          <div id="agg-entries-${c.id}" data-root="${esc(c.url)}" style="margin-top:6px;"><strong style="font-size:0.85em;">Entry URLs</strong>${entryEditor}</div>
+          <button class="run-detail-close" type="button" style="margin-top:3px;" onclick="addAggregatorEntry(${c.id})">+ add URL</button>
+          <div id="agg-probe-${c.id}">${_probeHtml(sig.last_probe, c.id)}</div>
+        </td>
         <td class="st-num">${flagCount || ""}</td>
         <td style="white-space:nowrap">${esc(detected)}</td>
         <td style="white-space:nowrap">
+          ${probeButton}
           <button class="btn-agg-confirm" style="padding:2px 8px;font-size:0.8em;" onclick="aggAction(${c.id},'confirm')" title="Confirm aggregator">✓</button>
           <button class="btn-agg-reject" style="padding:2px 8px;font-size:0.8em;margin-left:3px;" onclick="aggAction(${c.id},'reject')" title="Reject aggregator">✗</button>
         </td>
@@ -3737,15 +3860,34 @@ async function loadAggregatorCandidatesTable() {
   }
 }
 
+async function probeAggregator(id) {
+  const output = document.getElementById(`agg-probe-${id}`);
+  if (output) output.innerHTML = '<span style="color:var(--text-muted);">Probing…</span>';
+  try {
+    const report = await apiFetch(`/aggregators/${id}/probe`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ listing_urls: _collectAggregatorEntries(id) }),
+    });
+    if (output) output.innerHTML = _probeHtml(report, id);
+  } catch (e) {
+    if (output) output.innerHTML = `<span class="run-err">Probe failed: ${esc(e.message)}</span>`;
+  }
+}
+
 async function aggAction(id, action) {
   const row = document.querySelector(`#agg-candidates-table-body tr[data-id="${id}"]`);
   if (row) row.style.opacity = "0.5";
   try {
-    const status = action === "confirm" ? "confirmed" : "rejected";
+    const listingUrls = _collectAggregatorEntries(id);
     if (LOCAL_MODE) {
-      await apiFetch(`/aggregators/${id}/${action}`, { method: "POST" });
+      await apiFetch(`/aggregators/${id}/${action}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(action === "confirm" ? { listing_urls: listingUrls } : {}),
+      });
     } else if (action === "confirm") {
-      await exec("UPDATE sources SET aggregator_status='confirmed', source_type='aggregator' WHERE id=?", [id]);
+      await exec("UPDATE sources SET aggregator_status='confirmed', source_type='aggregator', listing_urls=? WHERE id=?", [JSON.stringify(listingUrls), id]);
     } else {
       await exec("UPDATE sources SET aggregator_status='rejected' WHERE id=?", [id]);
     }
@@ -3912,12 +4054,19 @@ function runResearcher() {
   const params = new URLSearchParams({ mode: document.getElementById("r-mode").value, extract_mode: extractMode });
   const limit = document.getElementById("r-limit").value;
   if (limit) params.set("limit", limit);
+  if (document.getElementById("r-deep").checked) params.set("deep", "true");
   if (prefilterProvider) params.set("prefilter_provider", prefilterProvider);
   if (extractProvider) params.set("extract_provider", extractProvider);
   button.disabled = true; log.innerHTML = ""; status.innerHTML = '<span class="run-running">Researcher running…</span>';
   listenToStream(`/researcher/run/stream?${params}`, {
     log,
-    onDone: data => { button.disabled = false; status.innerHTML = `<span class="run-ok">Completed: ${data.new_opportunities ?? 0} new opportunities.</span>`; loadResearcherRuns(); loadResearcherBudget(); loadStats(); },
+    onDone: data => {
+      button.disabled = false;
+      status.innerHTML = data.mode_status === "no_relevance_profile"
+        ? `<span class="run-warn">Not run: ${esc(data.mode_message || "No active relevance profile.")}</span>`
+        : `<span class="run-ok">Completed: ${data.new_opportunities ?? 0} new opportunities.</span>`;
+      loadResearcherRuns(); loadResearcherBudget(); loadStats();
+    },
     onError: data => { button.disabled = false; status.innerHTML = `<span class="run-err">Failed: ${esc(data.message || "unknown error")}</span>`; },
   });
 }
@@ -4000,6 +4149,8 @@ window.openDetailPanel = openDetailPanel;
 window.saveDetail = saveDetail;
 window.hideRunDetail = hideRunDetail;
 window.aggAction = aggAction;
+window.addAggregatorEntry = addAggregatorEntry;
+window.probeAggregator = probeAggregator;
 window.restoreExcludedDomain = restoreExcludedDomain;
 window._renderExcludedDomainsPage = _renderExcludedDomainsPage;
 window.openDetail = openDetail;
