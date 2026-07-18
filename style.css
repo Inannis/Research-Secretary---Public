@@ -1,3 +1,10 @@
+/* CANONICAL UI — edit here, never in the public mirror.
+   webapp/ is the single UI codebase; the live site is served from the separate
+   PUBLIC repo, a verbatim mirror of app.js / style.css / index.html. Pushing a
+   change under webapp/ triggers .github/workflows/mirror-webapp-to-public.yml.
+   Bump the ?v= token in webapp/index.html when this file changes, or caches
+   serve stale CSS. See architecture.md "Two-repo split". */
+
 /* ── Reset / base ──────────────────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: system-ui, -apple-system, sans-serif; font-size: 14px;

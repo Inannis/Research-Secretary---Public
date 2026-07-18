@@ -1,6 +1,31 @@
 // Canonical review UI. GitHub Pages/Turso is the primary everyday interface;
 // the local FastAPI server serves this same module with a local data adapter
 // and additionally enables its operational controls.
+//
+// ── THIS DIRECTORY IS THE ONLY SOURCE. EDIT HERE, NEVER IN THE MIRROR. ──────
+// There is exactly one UI codebase (webapp/), served by two backends:
+//   • GitHub Pages + Turso  → the live site, the interface actually used daily
+//   • local FastAPI + SQLite → same files, local data, plus operational controls
+// The retired duplicate UI (web/static/) no longer exists; web/ is Python only.
+//
+// DEPLOYING TO THE LIVE SITE. Pages does not serve this repo — it serves the
+// separate PUBLIC repo (github.com/Inannis/Research-Secretary---Public), which
+// is a verbatim MIRROR of app.js / style.css / index.html from this directory.
+// Editing here does NOT reach the live site by itself.
+//   • Automatic: pushing a change under webapp/ runs
+//     .github/workflows/mirror-webapp-to-public.yml, which copies these three
+//     files to the public repo and pushes, triggering the Pages build.
+//   • Manual fallback: copy the three files over, commit, push in that repo.
+// Either way the mirror must stay byte-identical — do not hand-edit it.
+//
+// CACHE-BUST: bump the ?v=YYYYMMDD[letter] token in webapp/index.html whenever
+// app.js or style.css changes, or Pages/CDN/browser caches serve stale assets
+// and a correct fix looks broken. The mirror workflow FAILS the build if these
+// files changed without a token bump, so this cannot be silently forgotten.
+//
+// Two repos exist so the public one can stay secret-free: credentials
+// (turso.env) live only in this private repo. See architecture.md
+// "Two-repo split".
 import { createClient } from "https://esm.sh/@libsql/client@0.17.4/web";
 
 const TURSO_URL = "libsql://artdb-inannis.aws-eu-west-1.turso.io";

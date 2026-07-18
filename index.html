@@ -1,10 +1,27 @@
 <!DOCTYPE html>
+<!--
+  CANONICAL UI — edit here, never in the public mirror.
+  webapp/ is the single UI codebase, served by GitHub Pages+Turso (the live
+  site) and by the local FastAPI server (same files, local data + controls).
+
+  The live site is served from the separate PUBLIC repo, a verbatim mirror of
+  app.js / style.css / index.html. Pushing a change under webapp/ triggers
+  .github/workflows/mirror-webapp-to-public.yml, which copies and pushes them.
+
+  BUMP THE ?v= TOKEN BELOW whenever app.js or style.css changes, or caches
+  serve stale assets and a correct fix looks broken. The mirror workflow fails
+  the build if you forget. See architecture.md "Two-repo split".
+
+  Asset refs must stay RELATIVE (Pages serves all three files from one
+  directory); the local server injects <base href="/ui/"> at the start of
+  <head> so they resolve against its static mount.
+-->
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Artist Residency DB</title>
-  <link rel="stylesheet" href="style.css?v=20260717a">
+  <link rel="stylesheet" href="style.css?v=20260717b">
 </head>
 <body>
 
@@ -349,6 +366,6 @@
   </main>
   </div>
 
-  <script type="module" src="app.js?v=20260717a"></script>
+  <script type="module" src="app.js?v=20260717b"></script>
 </body>
 </html>
