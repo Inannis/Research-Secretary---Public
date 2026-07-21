@@ -3215,7 +3215,7 @@ async function showRunCountPanel(runId, group, after, before) {
   if (_plRunPanelKey === key) { panel.style.display = "none"; _plRunPanelKey = null; return; }
   _plRunPanelKey = key;
   if (group === "aggregators") _lastAggRunPanelArgs = { runId, after, before };
-  const typeLabel = group === "extracted" ? "Extracted ✓" : group === "prefilter_passed" ? "Pre-filter ✓" : group === "prefilter" ? "Pre-filter ✗" : group === "dedup" ? "Dedup ✗" : group === "cross_listing" ? "Cross-listings ✗" : group === "aggregators" ? "Aggregator candidates" : "Evaluation ✗";
+  const typeLabel = group === "extracted" ? "Extracted ✓" : group === "prefilter_passed" ? "Pre-filter ✓" : group === "prefilter" ? "Pre-filter ✗" : group === "dedup" ? "Dedup ✗" : group === "cross_listing" ? "Cross-listings ✗" : group === "aggregators" ? "Aggregator candidates" : group === "errors" ? "Errors" : "Evaluation ✗";
   panel.innerHTML = `<div class="psb-title">Run #${runId} — ${esc(typeLabel)} <em>loading…</em></div>`;
   panel.style.display = "block";
   const closeJs = "closeRunPanel()";
@@ -3266,6 +3266,21 @@ async function showRunCountPanel(runId, group, after, before) {
               AND rs.pipeline_run_id = ?
         ORDER BY scraped_at DESC LIMIT 2000
       `, [runId, runId]);
+    } else if (group === "errors") {
+      const raw = await q(`
+        SELECT rs.url, rs.raw_text, rs.scraped_at, rs.error, ${_SOURCE_SQL_EXPR} AS source
+        FROM raw_scrape rs
+        LEFT JOIN sources s ON rs.source_id = s.id
+        LEFT JOIN query_log ql ON rs.query_id = ql.id
+        LEFT JOIN researcher_runs rr ON ql.run_id = rr.id
+        WHERE rs.error IS NOT NULL AND rs.pipeline_run_id = ?
+        ORDER BY rs.scraped_at DESC LIMIT 2000
+      `, [runId]);
+      rows = raw.map(r => ({
+        url: r.url, source: r.source, scraped_at: r.scraped_at,
+        rejection_reason: r.error, rejection_kind: null,
+        snippet: r.raw_text ? r.raw_text.slice(0, 400).trim() : null,
+      }));
     } else {
       const g = group === "prefilter" ? "prefilter" : group === "prefilter_passed" ? "prefilter_passed" : group === "dedup" ? "dedup" : "llm_rejected";
       rows = await _fetchRejectedList("__all__", g, runId);
@@ -3392,7 +3407,7 @@ async function loadPipelineRuns(page = 1) {
         <td class="ps-num">${mkBtn(ev, "eval", "ps-err-inline")}</td>
         <td class="ps-num">${mkBtn(dup, dupGroup, "ps-err-inline")}</td>
         <td class="ps-num">${agg > 0 ? `<button class="ps-breakdown-btn ps-agg" onclick="event.stopPropagation();showRunCountPanel(${id},'aggregators','${t0}','${t1}')">${agg}</button>` : ""}</td>
-        <td class="ps-num">${err > 0 ? `<span class="ps-err">${err}</span>` : ""}</td>
+        <td class="ps-num">${mkBtn(err, "errors", "ps-err")}</td>
         <td>${dur}</td>
         <td class="ps-num">${tokens}</td>
         <td>${deleteBtn}</td>
