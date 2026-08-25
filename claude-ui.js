@@ -21,6 +21,15 @@ function addOption(select, value, label, { first = false } = {}) {
   else select.appendChild(option);
 }
 
+function ensureRunnerIndicatorVisible() {
+  const indicator = byId("local-runner-indicator");
+  if (!indicator) return;
+  // The indicator originally reused .pipeline-badge, whose historical CSS is
+  // intentionally display:none until a pending count exists. The local runner
+  // status must always be visible, including while offline.
+  indicator.style.display = "inline-block";
+}
+
 function ensurePipelineItemLimit() {
   if (byId("p-itemcount")) return;
   const runButton = byId("btn-run-pipeline");
@@ -75,6 +84,8 @@ function syncClaudeControlState() {
 }
 
 function enhanceControls() {
+  ensureRunnerIndicatorVisible();
+
   const pEval = byId("p-eval-model");
   const pPrefilter = byId("p-prefilter");
   const rEval = byId("r-eval-model");
