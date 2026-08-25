@@ -208,10 +208,13 @@
     </section>
 
     <section id="researcher-view" class="hidden">
-      <button id="btn-back-researcher" class="btn-secondary">Back to list</button>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
+        <button id="btn-back-researcher" class="btn-secondary">Back to list</button>
+        <span id="local-runner-indicator" class="pipeline-badge" title="Checking for the loopback FastAPI runner">Local runner: checking…</span>
+      </div>
 
       <div class="tool-section">
-        <h3 class="tool-section-title">Researcher <span id="local-runner-indicator" class="pipeline-badge" title="Checking for the loopback FastAPI runner">Local runner: checking…</span></h3>
+        <h3 class="tool-section-title">Researcher</h3>
         <div id="researcher-controls">
           <label>Mode
             <select id="r-mode">
@@ -376,8 +379,8 @@
     (() => {
       if (window.__DATA_SOURCE__ === "local") return;
 
-      const RUNNER_CANDIDATES = ["http://127.0.0.1:8765", "http://localhost:8765"];
-      const OFFLINE_TITLE = "Start FastAPI on 127.0.0.1:8765 to enable operational runs from Pages";
+      const RUNNER_CANDIDATES = ["http://127.0.0.1:17865", "http://localhost:17865"];
+      const OFFLINE_TITLE = "Start FastAPI on 127.0.0.1:17865 to enable operational runs from Pages";
       const CUSTOM_SCRAPERS = new Map([
         ["Res Artis", "resartis"],
         ["TransArtists", "transartists"],
