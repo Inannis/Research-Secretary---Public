@@ -413,8 +413,9 @@ td .opp-type { font-size: 11px; }
                          cursor: pointer; font-size: 13px; }
 .tool-controls label { display: flex; flex-direction: column; gap: 4px;
                        font-size: 13px; color: #374151; }
-.tool-controls label select { padding: 5px 8px; border: 1px solid #d1d5db;
-                               border-radius: 3px; font-size: 13px; }
+.tool-controls label select, .tool-controls label input[type="number"] {
+  padding: 5px 8px; border: 1px solid #d1d5db;
+  border-radius: 3px; font-size: 13px; box-sizing: border-box; }
 
 .pipeline-controls-row { flex-wrap: nowrap; gap: 6px; overflow-x: auto; align-items: center; }
 .pipeline-controls-row #pipeline-info { white-space: nowrap; flex-shrink: 0; }

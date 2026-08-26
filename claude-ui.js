@@ -1,9 +1,9 @@
-// Pages/local-UI enhancement for the current Claude per-item runner.
+// Operational UI enhancements layered on top of the canonical SPA.
 //
-// The existing index.html loopback bridge owns runner discovery, SSE parsing,
-// button state and Stop behaviour. This module only adds the missing Claude UI
-// controls and redirects those existing requests to the Claude-specific local
-// endpoints. Keeping that logic here avoids duplicating the large SPA/bridge.
+// This module keeps the large app-core.js untouched. It adds the current
+// Claude per-item controls plus the durable-URL-state scraper mode selector,
+// then rewrites only the operational requests that need those newer routes or
+// parameters. The same code runs in the local FastAPI UI and the Pages bridge.
 
 const nativeFetch = window.fetch.bind(window);
 let claudePipelineActive = false;
@@ -24,9 +24,6 @@ function addOption(select, value, label, { first = false } = {}) {
 function ensureRunnerIndicatorVisible() {
   const indicator = byId("local-runner-indicator");
   if (!indicator) return;
-  // The indicator originally reused .pipeline-badge, whose historical CSS is
-  // intentionally display:none until a pending count exists. The local runner
-  // status must always be visible, including while offline.
   indicator.style.display = "inline-block";
 }
 
@@ -47,6 +44,48 @@ function ensurePipelineItemLimit() {
   input.style.width = "82px";
   label.appendChild(input);
   runButton.parentElement.insertBefore(label, runButton);
+}
+
+function ensureScraperModeControl() {
+  if (byId("scraper-mode-select")) return;
+  const oldMode = byId("scraper-mode-toggle");
+  const oldSafe = byId("scraper-skip-safe-toggle");
+  const row = oldMode?.closest("div") || byId("btn-scrape-all")?.parentElement;
+  if (!row) return;
+
+  // Keep the legacy elements in the DOM because app-core/index bridge code may
+  // still read them, but make the canonical three-mode selector the only visible
+  // control. Request rewriting below overrides the legacy all/newest parameters.
+  const oldModeLabel = oldMode?.closest("label");
+  const oldSafeLabel = oldSafe?.closest("label");
+  if (oldModeLabel) oldModeLabel.style.display = "none";
+  if (oldSafeLabel) oldSafeLabel.style.display = "none";
+  [...row.querySelectorAll("span")].forEach(span => {
+    if ((span.textContent || "").includes("Skip known")) span.style.display = "none";
+  });
+
+  const label = document.createElement("label");
+  label.className = "inline-label";
+  label.title = "normal refreshes stale known pages after 7 days; new only never refetches known URLs; full re-scrape ignores URL freshness.";
+  label.append("Scrape mode ");
+
+  const select = document.createElement("select");
+  select.id = "scraper-mode-select";
+  for (const [value, text] of [
+    ["normal", "Normal — new + 7-day refresh"],
+    ["new_only", "New only — never refetch known"],
+    ["full_rescrape", "Full re-scrape — fetch all listed"],
+  ]) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = text;
+    select.appendChild(option);
+  }
+  select.value = "normal";
+  label.appendChild(select);
+
+  const refreshButton = byId("btn-refresh-scrapers");
+  row.insertBefore(label, refreshButton || null);
 }
 
 function syncClaudeControlState() {
@@ -76,9 +115,6 @@ function syncClaudeControlState() {
   const rEval = byId("r-eval-model");
   const rPrefilter = byId("r-prefilter");
   if (rEval?.value === "claude" && rPrefilter?.value === "off") {
-    // Researcher discovery currently hands survivors to Claude after the
-    // researcher's normal prefilter stage; there is no meaningful eval-only
-    // handoff when prefilter is disabled.
     rPrefilter.value = "default";
   }
 }
@@ -99,6 +135,7 @@ function enhanceControls() {
   if (researcherClaude) researcherClaude.textContent = "Claude — per-item evaluation";
 
   ensurePipelineItemLimit();
+  ensureScraperModeControl();
   pEval?.addEventListener("change", syncClaudeControlState);
   pPrefilter?.addEventListener("change", syncClaudeControlState);
   rEval?.addEventListener("change", syncClaudeControlState);
@@ -115,6 +152,13 @@ function rewriteRunnerRequest(input, init) {
     url = new URL(rawUrl, window.location.href);
   } catch {
     return null;
+  }
+
+  if (url.pathname === "/scraper/run/stream") {
+    const mode = byId("scraper-mode-select")?.value || "normal";
+    url.searchParams.set("mode", mode);
+    url.searchParams.delete("skip_newest_safe");
+    return [url.toString(), init];
   }
 
   if (url.pathname === "/pipeline/run/stream") {
@@ -156,8 +200,6 @@ window.fetch = function patchedFetch(input, init) {
   return nativeFetch(input, init);
 };
 
-// Module scripts run after parsing, but keep this resilient if the loading
-// arrangement changes later.
 if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", enhanceControls, { once: true });
 } else {
