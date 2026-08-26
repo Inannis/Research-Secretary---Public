@@ -2792,6 +2792,23 @@ function _sourceFilterClause(source) {
   return { clause: " AND s.name = ?", params: [source] };
 }
 
+// known_urls/url_sources has no query_id/researcher-mode concept (unlike
+// raw_scrape) — a "Researcher: X" filter has nothing to match there and
+// falls back to "no rows" rather than guessing. Known limitation: once a
+// URL's raw_scrape history is pruned, per-researcher-mode source labels in
+// the general (all-time) drill-downs are no longer distinguishable from
+// "unknown" — see CHANGE-HISTORY.md.
+function _knownUrlsSourceFilterClause(source) {
+  if (!source || source === "__all__") return { clause: "", params: [] };
+  if (source.startsWith("Researcher: ")) {
+    return { clause: " AND 1=0", params: [] };
+  }
+  if (source === "unknown") {
+    return { clause: " AND s.name IS NULL", params: [] };
+  }
+  return { clause: " AND s.name = ?", params: [source] };
+}
+
 function _normalizeError(msg) {
   if (!msg) return "unknown";
   let m = msg.match(/^((?:Client|Server) error '[^']+') for url/);
@@ -2987,7 +3004,45 @@ const _REJECT_GROUP_CLAUSE = {
   dedup: " AND rs.skip_reason IN ('duplicate_pending_url', 'known_url_unchanged')",
 };
 
+// Outcome mapped only for the groups that ARE per-URL terminal state.
+// "dedup" (duplicate-pending/known-unchanged skips) and "prefilter_passed"
+// (awaiting-eval queue state) are genuinely per-occurrence/operational, not
+// reconstructable from known_urls — they always use the raw_scrape query
+// below, same as any run-scoped request (run_id is raw_scrape-only too).
+const _REJECT_GROUP_OUTCOME = {
+  llm_rejected: "eval_reject",
+  prefilter: "prefilter_reject",
+  cross_listing: "cross_listing",
+};
+
+async function _fetchRejectedListGeneral(source, group) {
+  const outcome = _REJECT_GROUP_OUTCOME[group];
+  const { clause: srcClause, params } = _knownUrlsSourceFilterClause(source);
+  const rows = await q(`
+    SELECT ku.url, ku.raw_text, ku.last_seen_at AS scraped_at,
+           ku.rejection_reason, ku.rejection_kind,
+           COALESCE(s.name, 'unknown') AS source
+    FROM known_urls ku
+    LEFT JOIN sources s ON s.id = (
+      SELECT us.source_id FROM url_sources us
+      WHERE us.url_id = ku.id
+      ORDER BY us.first_seen_at ASC, us.source_id ASC
+      LIMIT 1
+    )
+    WHERE ku.outcome = ?${srcClause}
+    ORDER BY ku.last_seen_at DESC LIMIT 2000
+  `, [outcome, ...params]);
+  return rows.map(r => ({
+    url: r.url, source: r.source, query_text: null, researcher_mode: null,
+    scraped_at: r.scraped_at, rejection_reason: r.rejection_reason, rejection_kind: r.rejection_kind,
+    snippet: r.raw_text ? r.raw_text.slice(0, 400).trim() : null,
+  }));
+}
+
 async function _fetchRejectedList(source, group, runId) {
+  if (runId == null && group in _REJECT_GROUP_OUTCOME) {
+    return _fetchRejectedListGeneral(source, group);
+  }
   const groupClause = _REJECT_GROUP_CLAUSE[group] || _REJECT_GROUP_CLAUSE.llm_rejected;
   const { clause: srcClause, params: srcParams } = _sourceFilterClause(source);
   const params = [...srcParams];
@@ -3060,16 +3115,7 @@ function _aggregatorListHtml(rows, label, closeJs) {
   return html;
 }
 
-async function _fetchAggregatorRows(whereSql, params) {
-  const rows = await q(`
-    SELECT rs.url, rs.scraped_at, rs.aggregator_note, ${_SOURCE_SQL_EXPR} AS source
-    FROM raw_scrape rs
-    LEFT JOIN sources s ON rs.source_id = s.id
-    LEFT JOIN query_log ql ON rs.query_id = ql.id
-    LEFT JOIN researcher_runs rr ON ql.run_id = rr.id
-    WHERE rs.aggregator_note IS NOT NULL${whereSql}
-    ORDER BY rs.scraped_at DESC
-  `, params);
+async function _resolveAggregatorDomainStatus(rows) {
   const result = [];
   for (const r of rows) {
     let domainUrl = null, status = "none", sourceId = null;
@@ -3089,6 +3135,39 @@ async function _fetchAggregatorRows(whereSql, params) {
   return result;
 }
 
+async function _fetchAggregatorRows(whereSql, params) {
+  const rows = await q(`
+    SELECT rs.url, rs.scraped_at, rs.aggregator_note, ${_SOURCE_SQL_EXPR} AS source
+    FROM raw_scrape rs
+    LEFT JOIN sources s ON rs.source_id = s.id
+    LEFT JOIN query_log ql ON rs.query_id = ql.id
+    LEFT JOIN researcher_runs rr ON ql.run_id = rr.id
+    WHERE rs.aggregator_note IS NOT NULL${whereSql}
+    ORDER BY rs.scraped_at DESC
+  `, params);
+  return _resolveAggregatorDomainStatus(rows);
+}
+
+// Terminal/historical, all-time — known_urls.aggregator_note is the same
+// note text raw_scrape carried, already deduplicated by normalized URL.
+async function _fetchAggregatorRowsGeneral(source) {
+  const { clause, params } = _knownUrlsSourceFilterClause(source);
+  const rows = await q(`
+    SELECT ku.url, ku.last_seen_at AS scraped_at, ku.aggregator_note,
+           COALESCE(s.name, 'unknown') AS source
+    FROM known_urls ku
+    LEFT JOIN sources s ON s.id = (
+      SELECT us.source_id FROM url_sources us
+      WHERE us.url_id = ku.id
+      ORDER BY us.first_seen_at ASC, us.source_id ASC
+      LIMIT 1
+    )
+    WHERE ku.outcome = 'aggregator'${clause}
+    ORDER BY ku.last_seen_at DESC
+  `, params);
+  return _resolveAggregatorDomainStatus(rows);
+}
+
 async function showAggregatorList(source) {
   const panel = document.getElementById("ps-breakdown-panel");
   if (!panel) return;
@@ -3100,8 +3179,7 @@ async function showAggregatorList(source) {
   panel.innerHTML = `<div class="psb-title">${esc(label)} <em>loading…</em></div>`;
   panel.style.display = "block";
   try {
-    const { clause, params } = _sourceFilterClause(source);
-    const rows = await _fetchAggregatorRows(clause, params);
+    const rows = await _fetchAggregatorRowsGeneral(source);
     if (_psVisible !== key) return;
     panel.innerHTML = _aggregatorListHtml(rows, label, "closeBreakdownPanel()");
   } catch (e) {
@@ -3121,17 +3199,23 @@ async function showExtractedList(source) {
   panel.innerHTML = `<div class="psb-title">${esc(label)} <em>loading…</em></div>`;
   panel.style.display = "block";
   try {
-    const { clause, params } = _sourceFilterClause(source);
+    // Terminal/historical, all-time — known_urls.opportunity_id already names
+    // the exact accepted opportunity, no raw_scrape join needed.
+    const { clause, params } = _knownUrlsSourceFilterClause(source);
     const rows = await q(`
       SELECT o.id, o.title, o.url, o.deadline, COALESCE(o.manual_tier, o.llm_tier) AS tier,
-             rs.scraped_at, ${_SOURCE_SQL_EXPR} AS source
-      FROM raw_scrape rs
-      JOIN opportunities o ON o.url = rs.url
-      LEFT JOIN sources s ON rs.source_id = s.id
-      LEFT JOIN query_log ql ON rs.query_id = ql.id
-      LEFT JOIN researcher_runs rr ON ql.run_id = rr.id
-      WHERE rs.processed = 1 AND rs.error IS NULL${clause}
-      ORDER BY rs.processed_at DESC LIMIT 2000
+             ku.last_seen_at AS scraped_at,
+             COALESCE(s.name, 'unknown') AS source
+      FROM known_urls ku
+      JOIN opportunities o ON o.id = ku.opportunity_id
+      LEFT JOIN sources s ON s.id = (
+        SELECT us.source_id FROM url_sources us
+        WHERE us.url_id = ku.id
+        ORDER BY us.first_seen_at ASC, us.source_id ASC
+        LIMIT 1
+      )
+      WHERE ku.outcome = 'accepted'${clause}
+      ORDER BY ku.last_seen_at DESC LIMIT 2000
     `, params);
     if (_psExtractedKey !== key) return;
     const closeJs = "closeBreakdownPanel()";
@@ -3470,52 +3554,97 @@ async function deletePipelineRun(runId) {
 
 async function loadPipelineStatus() {
   try {
-    const [[{ unprocessed }], [{ errored }], [{ total }], [{ processed }], [{ extracted }]] = await Promise.all([
+    // Operational queue state: always the *current* raw_scrape content, never
+    // pruned/historical — this is raw_scrape's actual job.
+    const [[{ unprocessed }], [{ total }], [{ processed }]] = await Promise.all([
       q("SELECT COUNT(*) AS unprocessed FROM raw_scrape WHERE processed = 0 AND error IS NULL"),
-      q("SELECT COUNT(*) AS errored FROM raw_scrape WHERE error IS NOT NULL"),
       q("SELECT COUNT(*) AS total FROM raw_scrape"),
       q("SELECT COUNT(*) AS processed FROM raw_scrape WHERE processed = 1"),
-      q(`SELECT COUNT(DISTINCT rs.url) AS extracted FROM raw_scrape rs
-         WHERE rs.processed = 1 AND rs.error IS NULL
-           AND EXISTS (SELECT 1 FROM opportunities o WHERE o.url = rs.url)`),
+    ]);
+    // Terminal/historical: known_urls.outcome is already deduplicated by
+    // normalized URL, so no DISTINCT needed (unlike the raw_scrape row-count
+    // query this replaces).
+    const [[{ extracted }], [{ errored }]] = await Promise.all([
+      q("SELECT COUNT(*) AS extracted FROM known_urls WHERE outcome = 'accepted'"),
+      q("SELECT COALESCE(SUM(error_count), 0) AS errored FROM known_urls"),
     ]);
     const scopeRows = await q("SELECT COALESCE(scope, 'unknown') AS scope, COUNT(*) AS n FROM opportunities GROUP BY 1");
     const opportunitiesByScope = {};
     for (const r of scopeRows) opportunitiesByScope[r.scope] = r.n;
     const opportunitiesTotal = Object.values(opportunitiesByScope).reduce((a, b) => a + b, 0);
 
-    const bySource = await q(`
-      SELECT
-        COALESCE(s.name,
-          CASE WHEN rs.query_id IS NOT NULL
-               THEN 'Researcher: ' || COALESCE(
-                   (SELECT rr.mode FROM query_log ql JOIN researcher_runs rr ON ql.run_id = rr.id WHERE ql.id = rs.query_id),
-                   'unknown')
-               ELSE 'unknown'
-          END) AS source,
-        COUNT(*) AS total,
-        SUM(CASE WHEN rs.processed = 0 AND rs.error IS NULL THEN 1 ELSE 0 END) AS unprocessed,
-        SUM(CASE WHEN rs.processed = 1 THEN 1 ELSE 0 END) AS done,
-        SUM(CASE WHEN rs.error IS NOT NULL THEN 1 ELSE 0 END) AS errored,
-        COUNT(DISTINCT CASE WHEN rs.processed = 1 AND rs.error IS NULL
-                  AND EXISTS (SELECT 1 FROM opportunities o WHERE o.url = rs.url)
-             THEN rs.url END) AS extracted,
-        SUM(CASE WHEN rs.skip_reason = 'prefilter_not_opportunity' AND rs.aggregator_note IS NULL THEN 1 ELSE 0 END) AS prefilter_dropped,
+    // Rows currently prefiltered and awaiting evaluation are queue state, not
+    // a terminal outcome — stays on raw_scrape like unprocessed/done.
+    const prefilterPassedRows = await q(`
+      SELECT COALESCE(s.name, 'unknown') AS source,
         SUM(CASE WHEN rs.processed = 1 AND rs.error IS NULL AND rs.skip_reason IS NULL AND rs.llm_batch_id IS NULL
                   AND rs.prefilter_signals IS NOT NULL AND rs.aggregator_note IS NULL
-             THEN 1 ELSE 0 END) AS prefilter_passed,
-        SUM(CASE WHEN rs.processed = 1 AND rs.error IS NULL AND rs.skip_reason IS NULL AND rs.llm_batch_id IS NOT NULL
-                  AND rs.aggregator_note IS NULL AND COALESCE(rs.rejection_reason, '') NOT LIKE 'cross_listing:%'
-                  AND NOT EXISTS (SELECT 1 FROM opportunities o WHERE o.url = rs.url)
-             THEN 1 ELSE 0 END) AS eval_dropped,
-        SUM(CASE WHEN rs.skip_reason IN ('duplicate_pending_url', 'known_url_unchanged') OR rs.rejection_reason LIKE 'cross_listing:%'
-             THEN 1 ELSE 0 END) AS duplicates,
-        SUM(CASE WHEN rs.aggregator_note IS NOT NULL THEN 1 ELSE 0 END) AS aggregators
+             THEN 1 ELSE 0 END) AS prefilter_passed
       FROM raw_scrape rs
       LEFT JOIN sources s ON rs.source_id = s.id
       GROUP BY 1
-      ORDER BY total DESC
     `);
+    const prefilterPassedBySource = {};
+    for (const r of prefilterPassedRows) prefilterPassedBySource[r.source] = r.prefilter_passed || 0;
+
+    const operationalRows = await q(`
+      SELECT COALESCE(s.name, 'unknown') AS source,
+        SUM(CASE WHEN rs.processed = 0 AND rs.error IS NULL THEN 1 ELSE 0 END) AS unprocessed,
+        SUM(CASE WHEN rs.processed = 1 THEN 1 ELSE 0 END) AS done
+      FROM raw_scrape rs
+      LEFT JOIN sources s ON rs.source_id = s.id
+      GROUP BY 1
+    `);
+    const operationalBySource = {};
+    for (const r of operationalRows) operationalBySource[r.source] = r;
+
+    // A URL can be linked to more than one source_id in url_sources (found
+    // via more than one listing over time); attribute it to the single
+    // source it was first seen through so it isn't double-counted across
+    // every linked source — the same one-row-one-source shape raw_scrape's
+    // per-row source_id had.
+    const historicalRows = await q(`
+      SELECT
+        COALESCE(s.name, 'unknown') AS source,
+        COUNT(*) AS total,
+        SUM(CASE WHEN ku.outcome = 'accepted' THEN 1 ELSE 0 END) AS extracted,
+        SUM(CASE WHEN ku.outcome = 'prefilter_reject' THEN 1 ELSE 0 END) AS prefilter_dropped,
+        SUM(CASE WHEN ku.outcome = 'eval_reject' THEN 1 ELSE 0 END) AS eval_dropped,
+        SUM(CASE WHEN ku.outcome = 'aggregator' THEN 1 ELSE 0 END) AS aggregators,
+        SUM(ku.duplicate_skip_count) + SUM(CASE WHEN ku.outcome = 'cross_listing' THEN 1 ELSE 0 END) AS duplicates,
+        SUM(ku.error_count) AS errored
+      FROM known_urls ku
+      LEFT JOIN sources s ON s.id = (
+        SELECT us.source_id FROM url_sources us
+        WHERE us.url_id = ku.id
+        ORDER BY us.first_seen_at ASC, us.source_id ASC
+        LIMIT 1
+      )
+      GROUP BY 1
+    `);
+    const historicalBySource = {};
+    for (const r of historicalRows) historicalBySource[r.source] = r;
+
+    const allSourceNames = new Set([...Object.keys(operationalBySource), ...Object.keys(historicalBySource)]);
+    const bySource = [...allSourceNames].map(name => {
+      const op = operationalBySource[name] || { unprocessed: 0, done: 0 };
+      const hist = historicalBySource[name] || {
+        total: 0, extracted: 0, prefilter_dropped: 0, eval_dropped: 0, aggregators: 0, duplicates: 0, errored: 0,
+      };
+      return {
+        source: name,
+        total: Math.max(hist.total || 0, (op.unprocessed || 0) + (op.done || 0)),
+        unprocessed: op.unprocessed || 0,
+        done: op.done || 0,
+        errored: hist.errored || 0,
+        extracted: hist.extracted || 0,
+        prefilter_dropped: hist.prefilter_dropped || 0,
+        prefilter_passed: prefilterPassedBySource[name] || 0,
+        eval_dropped: hist.eval_dropped || 0,
+        duplicates: hist.duplicates || 0,
+        aggregators: hist.aggregators || 0,
+      };
+    }).sort((a, b) => b.total - a.total);
 
     let bySourceHtml = "";
     if (bySource.length) {
