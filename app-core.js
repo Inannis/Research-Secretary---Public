@@ -3574,9 +3574,13 @@ async function loadPipelineStatus() {
     // Terminal/historical: known_urls.outcome is already deduplicated by
     // normalized URL, so no DISTINCT needed (unlike the raw_scrape row-count
     // query this replaces).
+    // errored is current, not historical: an error is a property of the raw_scrape
+    // row that hit it, and "Clear errors" deletes exactly these rows so they get
+    // re-scraped -- a durable all-time tally (known_urls.error_count) would never
+    // move when cleared, which is the whole point of clicking it.
     const [[{ extracted }], [{ errored }]] = await Promise.all([
       q("SELECT COUNT(*) AS extracted FROM known_urls WHERE outcome = 'accepted'"),
-      q("SELECT COALESCE(SUM(error_count), 0) AS errored FROM known_urls"),
+      q("SELECT COUNT(*) AS errored FROM raw_scrape WHERE error IS NOT NULL"),
     ]);
     // Only opportunities whose source URL is currently accepted count toward the
     // headline total/breakdown -- an opportunity can outlive its URL's acceptance
@@ -3610,7 +3614,8 @@ async function loadPipelineStatus() {
     const operationalRows = await q(`
       SELECT COALESCE(s.name, 'unknown') AS source,
         SUM(CASE WHEN rs.processed = 0 AND rs.error IS NULL THEN 1 ELSE 0 END) AS unprocessed,
-        SUM(CASE WHEN rs.processed = 1 THEN 1 ELSE 0 END) AS done
+        SUM(CASE WHEN rs.processed = 1 THEN 1 ELSE 0 END) AS done,
+        SUM(CASE WHEN rs.error IS NOT NULL THEN 1 ELSE 0 END) AS errored
       FROM raw_scrape rs
       LEFT JOIN sources s ON rs.source_id = s.id
       GROUP BY 1
@@ -3631,8 +3636,7 @@ async function loadPipelineStatus() {
         SUM(CASE WHEN ku.outcome = 'prefilter_reject' THEN 1 ELSE 0 END) AS prefilter_dropped,
         SUM(CASE WHEN ku.outcome = 'eval_reject' THEN 1 ELSE 0 END) AS eval_dropped,
         SUM(CASE WHEN ku.outcome = 'aggregator' THEN 1 ELSE 0 END) AS aggregators,
-        SUM(ku.duplicate_skip_count) + SUM(CASE WHEN ku.outcome = 'cross_listing' THEN 1 ELSE 0 END) AS duplicates,
-        SUM(ku.error_count) AS errored
+        SUM(ku.duplicate_skip_count) + SUM(CASE WHEN ku.outcome = 'cross_listing' THEN 1 ELSE 0 END) AS duplicates
       FROM known_urls ku
       LEFT JOIN sources s ON s.id = (
         SELECT us.source_id FROM url_sources us
@@ -3647,16 +3651,16 @@ async function loadPipelineStatus() {
 
     const allSourceNames = new Set([...Object.keys(operationalBySource), ...Object.keys(historicalBySource)]);
     const bySource = [...allSourceNames].map(name => {
-      const op = operationalBySource[name] || { unprocessed: 0, done: 0 };
+      const op = operationalBySource[name] || { unprocessed: 0, done: 0, errored: 0 };
       const hist = historicalBySource[name] || {
-        total: 0, extracted: 0, prefilter_dropped: 0, eval_dropped: 0, aggregators: 0, duplicates: 0, errored: 0,
+        total: 0, extracted: 0, prefilter_dropped: 0, eval_dropped: 0, aggregators: 0, duplicates: 0,
       };
       return {
         source: name,
         total: Math.max(hist.total || 0, (op.unprocessed || 0) + (op.done || 0)),
         unprocessed: op.unprocessed || 0,
         done: op.done || 0,
-        errored: hist.errored || 0,
+        errored: op.errored || 0,
         extracted: hist.extracted || 0,
         prefilter_dropped: hist.prefilter_dropped || 0,
         prefilter_passed: prefilterPassedBySource[name] || 0,
