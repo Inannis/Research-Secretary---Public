@@ -3460,14 +3460,19 @@ async function loadPipelineRuns(page = 1) {
       const total = hasLive ? (live.live_total || 0) : (ext + pf + ev + dup + err);
       const t0 = r.started_at || "";
       const t1 = r.finished_at || "";
-      const canDrill = hasLive || !!r.finished_at;
+      // A count is only clickable when it's backed by live raw_scrape rows still
+      // tagged to this run (hasLive) — the click-through panel always queries live,
+      // so drilling into a stale stored count (no rows left attributed to this run,
+      // e.g. an older run predating the pipeline_run_id attribution fix) would just
+      // show "None found" even though the number itself is accurate.
+      const staleTitle = ' title="Stored total from when this run finished — no live rows are still attributed to this run to list individually"';
       const isClaudeRun = r.extract_mode && (r.extract_mode === "claude" || r.extract_mode === "claude_prefilter");
       const dupGroup = isClaudeRun ? "cross_listing" : "dedup";
       const mkBtn = (n, group, cls) => {
-        const drillable = n > 0 && (group === "dedup" ? hasLive : canDrill);
-        return drillable
+        if (n <= 0) return "";
+        return hasLive
           ? `<button class="ps-breakdown-btn ${cls}" onclick="event.stopPropagation();showRunCountPanel(${id},'${group}','${t0}','${t1}')">${n}</button>`
-          : (n > 0 ? `<span class="ps-num">${n}</span>` : "");
+          : `<span class="ps-num"${staleTitle}>${n}</span>`;
       };
       const canDelete = r.status !== "running";
       const deleteBtn = canDelete
@@ -3490,7 +3495,7 @@ async function loadPipelineRuns(page = 1) {
         <td class="ps-num">${mkBtn(pf, "prefilter", "ps-err-inline")}</td>
         <td class="ps-num">${mkBtn(ev, "eval", "ps-err-inline")}</td>
         <td class="ps-num">${mkBtn(dup, dupGroup, "ps-err-inline")}</td>
-        <td class="ps-num">${agg > 0 ? `<button class="ps-breakdown-btn ps-agg" onclick="event.stopPropagation();showRunCountPanel(${id},'aggregators','${t0}','${t1}')">${agg}</button>` : ""}</td>
+        <td class="ps-num">${agg > 0 ? (hasLive ? `<button class="ps-breakdown-btn ps-agg" onclick="event.stopPropagation();showRunCountPanel(${id},'aggregators','${t0}','${t1}')">${agg}</button>` : `<span class="ps-num"${staleTitle}>${agg}</span>`) : ""}</td>
         <td class="ps-num">${mkBtn(err, "errors", "ps-err")}</td>
         <td>${dur}</td>
         <td class="ps-num">${tokens}</td>
