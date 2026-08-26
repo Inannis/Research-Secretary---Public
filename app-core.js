@@ -3573,7 +3573,17 @@ async function loadPipelineStatus() {
       q("SELECT COUNT(*) AS extracted FROM known_urls WHERE outcome = 'accepted'"),
       q("SELECT COALESCE(SUM(error_count), 0) AS errored FROM known_urls"),
     ]);
-    const scopeRows = await q("SELECT COALESCE(scope, 'unknown') AS scope, COUNT(*) AS n FROM opportunities GROUP BY 1");
+    // Only opportunities whose source URL is currently accepted count toward the
+    // headline total/breakdown -- an opportunity can outlive its URL's acceptance
+    // (a later re-decision, or a same-pass dedup/cross-listing marker written
+    // alongside a valid insert) without being deleted, and counting those here
+    // would silently exceed the "extracted" count above with no visible reason.
+    const scopeRows = await q(`
+      SELECT COALESCE(o.scope, 'unknown') AS scope, COUNT(*) AS n
+      FROM opportunities o
+      WHERE EXISTS (SELECT 1 FROM known_urls k WHERE k.opportunity_id = o.id AND k.outcome = 'accepted')
+      GROUP BY 1
+    `);
     const opportunitiesByScope = {};
     for (const r of scopeRows) opportunitiesByScope[r.scope] = r.n;
     const opportunitiesTotal = Object.values(opportunitiesByScope).reduce((a, b) => a + b, 0);
