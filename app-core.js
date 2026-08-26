@@ -3497,13 +3497,12 @@ async function loadPipelineStatus() {
         SUM(CASE WHEN rs.processed = 0 AND rs.error IS NULL THEN 1 ELSE 0 END) AS unprocessed,
         SUM(CASE WHEN rs.processed = 1 THEN 1 ELSE 0 END) AS done,
         SUM(CASE WHEN rs.error IS NOT NULL THEN 1 ELSE 0 END) AS errored,
-        SUM(CASE WHEN rs.processed = 1 AND rs.error IS NULL
+        COUNT(DISTINCT CASE WHEN rs.processed = 1 AND rs.error IS NULL
                   AND EXISTS (SELECT 1 FROM opportunities o WHERE o.url = rs.url)
-             THEN 1 ELSE 0 END) AS extracted,
+             THEN rs.url END) AS extracted,
         SUM(CASE WHEN rs.skip_reason = 'prefilter_not_opportunity' AND rs.aggregator_note IS NULL THEN 1 ELSE 0 END) AS prefilter_dropped,
         SUM(CASE WHEN rs.processed = 1 AND rs.error IS NULL AND rs.skip_reason IS NULL AND rs.llm_batch_id IS NULL
                   AND rs.prefilter_signals IS NOT NULL AND rs.aggregator_note IS NULL
-                  AND NOT EXISTS (SELECT 1 FROM opportunities o WHERE o.url = rs.url)
              THEN 1 ELSE 0 END) AS prefilter_passed,
         SUM(CASE WHEN rs.processed = 1 AND rs.error IS NULL AND rs.skip_reason IS NULL AND rs.llm_batch_id IS NOT NULL
                   AND rs.aggregator_note IS NULL AND COALESCE(rs.rejection_reason, '') NOT LIKE 'cross_listing:%'
