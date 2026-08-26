@@ -2873,9 +2873,14 @@ async function showPipelineBreakdown(source, type) {
   panel.style.display = "block";
   try {
     const { clause, params } = _sourceFilterClause(source);
+    // scrapers/base.py::_record_error force-sets processed=1 on a fetch failure
+    // (so it isn't endlessly re-queued) -- processed alone can't distinguish a
+    // failed fetch from a failed later stage. raw_text IS NULL can: a fetch
+    // failure never got page content at all, while any downstream (extraction/
+    // insert) failure happened on a row that was actually fetched.
     const rows = await q(`
       SELECT
-        CASE WHEN rs.processed = 0 THEN 'scrape' ELSE 'pipeline' END AS err_type,
+        CASE WHEN rs.raw_text IS NULL THEN 'scrape' ELSE 'pipeline' END AS err_type,
         rs.error AS error_msg,
         COUNT(*) AS cnt,
         MAX(rs.scraped_at) AS last_seen,
