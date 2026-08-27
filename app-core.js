@@ -3450,8 +3450,8 @@ async function loadPipelineRuns(page = 1) {
         ? ` <span class="run-scheduled-badge" title="Triggered by a Claude scheduled task">⏰</span>`
         : "";
       const modeLabel = (r.source_filter
-        ? `${esc(r.extract_mode || "quality")} · ${esc(r.source_filter.slice(0, 30))}`
-        : esc(r.extract_mode || "quality")) + scheduledBadge;
+        ? `${esc(r.extract_mode || "default")} · ${esc(r.source_filter.slice(0, 30))}`
+        : esc(r.extract_mode || "default")) + scheduledBadge;
       const id = r.id;
       const live = liveByRun[r.id];
       const hasLive = !!live && (live.live_total || 0) > 0;
@@ -4212,7 +4212,7 @@ function localModeParams(prefilterId, evalId) {
   const prefilter = document.getElementById(prefilterId)?.value || "default";
   const evaluate = document.getElementById(evalId)?.value || "default";
   return {
-    extractMode: evaluate === "off" ? "prefilter" : prefilter === "off" ? "max" : "quality",
+    extractMode: evaluate === "off" ? "prefilter-only" : prefilter === "off" ? "evaluation-only" : "default",
     prefilterProvider: prefilter === "default" || prefilter === "off" ? null : prefilter,
     extractProvider: evaluate === "default" || evaluate === "off" || evaluate === "claude" ? null : evaluate,
   };

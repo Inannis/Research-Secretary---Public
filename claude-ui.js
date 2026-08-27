@@ -111,6 +111,10 @@ function syncClaudeControlState() {
       ? "Maximum items to process; blank means drain the selected queue."
       : "Item limit applies to the Claude per-item engine.";
   }
+  const pBatchSize = byId("p-batch-size");
+  const pMaxItems = byId("p-max-items");
+  if (pBatchSize) pBatchSize.disabled = pipelineClaude;
+  if (pMaxItems) pMaxItems.disabled = pipelineClaude;
 
   const rEval = byId("r-eval-model");
   const rPrefilter = byId("r-prefilter");
