@@ -445,6 +445,15 @@ td .opp-type { font-size: 11px; }
                   font-size: 11px; font-weight: 600; padding: 2px 8px;
                   border-radius: 10px; vertical-align: middle; }
 
+/* ── Local runner status indicator ───────────────────────────────────────── */
+/* Own class (not .pipeline-badge) so its color reflects actual state instead
+   of always being the alert-red used for pending-item counts. */
+.runner-indicator { background: #6b7280; color: #fff; font-size: 11px; font-weight: 600;
+                    padding: 2px 8px; border-radius: 10px; vertical-align: middle; }
+.runner-indicator.runner-ok   { background: #16a34a; }
+.runner-indicator.runner-warn { background: #dc2626; }
+.runner-indicator.runner-off  { background: #6b7280; }
+
 /* ── Run detail panel ────────────────────────────────────────────────────── */
 .run-detail { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 4px;
               padding: 12px 16px; margin-top: 8px; font-size: 13px; }

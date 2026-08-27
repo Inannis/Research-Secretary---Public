@@ -21,7 +21,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Artist Residency DB</title>
-  <link rel="stylesheet" href="style.css?v=20260826c">
+  <link rel="stylesheet" href="style.css?v=20260827a">
 </head>
 <body>
 
@@ -210,7 +210,7 @@
     <section id="researcher-view" class="hidden">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
         <button id="btn-back-researcher" class="btn-secondary">Back to list</button>
-        <span id="local-runner-indicator" class="pipeline-badge" title="Checking for the loopback FastAPI runner">Local runner: checking…</span>
+        <span id="local-runner-indicator" class="runner-indicator runner-off" title="Checking for the loopback FastAPI runner">Local runner: checking…</span>
       </div>
 
       <div class="tool-section">
@@ -231,7 +231,7 @@
               <option value="default" selected>Default — Gemma 4 26B (Cloudflare, max effort)</option>
               <option value="cloudflare">Cloudflare — Gemma 4 26B (max effort)</option>
               <option value="mistral">Mistral — Small (high effort)</option>
-              <option value="groq">Groq — GPT-OSS 20B (low effort)</option>
+              <option value="groq">Groq — GPT-OSS 20B (high effort)</option>
               <option value="off">Off (skip prefilter)</option>
             </select>
           </label>
@@ -240,7 +240,7 @@
               <option value="default" selected>Default — Qwen3.8 27B (Cloudflare, xhigh effort)</option>
               <option value="cloudflare">Cloudflare — Qwen3.8 27B (xhigh effort)</option>
               <option value="mistral">Mistral — Large (high effort)</option>
-              <option value="groq">Groq — Qwen3.8 27B (low effort)</option>
+              <option value="groq">Groq — Qwen3.8 27B (high effort)</option>
               <option value="claude">Claude (VS Code) — Sonnet</option>
             </select>
           </label>
@@ -292,7 +292,7 @@
               <option value="default" selected>Default — Gemma 4 26B (Cloudflare, max effort)</option>
               <option value="cloudflare">Cloudflare — Gemma 4 26B (max effort)</option>
               <option value="mistral">Mistral — Small (high effort)</option>
-              <option value="groq">Groq — GPT-OSS 20B (low effort)</option>
+              <option value="groq">Groq — GPT-OSS 20B (high effort)</option>
               <option value="off">Off (skip prefilter)</option>
             </select>
           </label>
@@ -301,7 +301,7 @@
               <option value="default" selected>Default — Qwen3.8 27B (Cloudflare, xhigh effort)</option>
               <option value="cloudflare">Cloudflare — Qwen3.8 27B (xhigh effort)</option>
               <option value="mistral">Mistral — Large (high effort)</option>
-              <option value="groq">Groq — Qwen3.8 27B (low effort)</option>
+              <option value="groq">Groq — Qwen3.8 27B (high effort)</option>
               <option value="off">Off (prefilter only)</option>
             </select>
           </label>
@@ -425,14 +425,17 @@
       function updateIndicator() {
         const el = $("local-runner-indicator");
         if (!el) return;
+        el.classList.remove("runner-ok", "runner-warn", "runner-off");
         if (!runnerBase || !runnerHealth) {
           el.textContent = "Local runner: ○ offline";
           el.title = OFFLINE_TITLE;
+          el.classList.add("runner-off");
           return;
         }
         if (runnerHealth.db_backend !== "local") {
           el.textContent = "Local runner: ● Turso mode";
           el.title = "Restart with DB_BACKEND=local. Pages runs use local SQLite so full HTML is archived.";
+          el.classList.add("runner-warn");
           return;
         }
         const state = runnerSync?.state;
@@ -443,6 +446,7 @@
           : state === "out_of_sync"
             ? "Local SQLite differs from Turso. Refresh it from Turso before starting a new local work session."
             : "Runner connected, but local SQLite could not be compared with Turso.";
+        el.classList.add(state === "synced" ? "runner-ok" : state === "out_of_sync" ? "runner-warn" : "runner-off");
       }
 
       function modeParams(prefilterId, evalId) {
