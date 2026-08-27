@@ -2596,6 +2596,7 @@ function bindResearcherPanel() {
   });
   document.getElementById("btn-refresh-pipeline").addEventListener("click", loadPipelineStatus);
   document.getElementById("btn-refresh-pipeline-runs").addEventListener("click", () => loadPipelineRuns(_pipelineRunsCurrentPage));
+  document.getElementById("btn-refresh-scraper-runs").addEventListener("click", loadScraperRuns);
   document.getElementById("btn-toggle-excluded-domains").addEventListener("click", toggleExcludedDomainsPanel);
   document.getElementById("btn-close-excluded-domains").addEventListener("click", toggleExcludedDomainsPanel);
 }
@@ -3397,7 +3398,7 @@ async function loadPipelineRuns(page = 1) {
     const runs = await q(`
       SELECT id, status, extract_mode, source_filter, triggered_by, batches,
              gate_retries, cot_max_context_tokens, cot_output_tokens,
-             api_tokens_in, api_tokens_out,
+             api_tokens_in, api_tokens_out, error_message,
              new_opportunities, rejected, eval_dropped, duplicates, errors, aggregators,
              started_at, finished_at,
              CAST((JULIANDAY(COALESCE(finished_at, datetime('now'))) - JULIANDAY(started_at)) * 86400 AS INTEGER) AS duration_seconds
@@ -4301,16 +4302,33 @@ function runPipelineForSource(source) {
 
 function refreshPipelineViews() { loadPipelineStatus(); loadPipelineRuns(); loadScraperTable(); loadAggregatorCandidatesTable(); loadScraperRuns(); loadStats(); }
 
+let _scraperPollInterval = null;
 function runScraper(target) {
   const buttons = document.querySelectorAll(".btn-scrape"), status = document.getElementById("scraper-status"), log = document.getElementById("scraper-log");
   const mode = document.getElementById("scraper-mode-toggle").checked ? "newest" : "all";
   const params = new URLSearchParams({ target, mode });
   if (document.getElementById("scraper-skip-safe-toggle").checked) params.set("skip_newest_safe", "true");
   buttons.forEach(button => { button.disabled = true; }); log.innerHTML = ""; status.innerHTML = '<span class="run-running">Scrapers running…</span>';
+  // A single-source scrape can run for tens of minutes with only start/done SSE
+  // events (per-item events exist server-side but this tab may not stay open the
+  // whole time) — poll the durable scraper_runs-backed views so progress is visible
+  // even across a reload, not just while this exact SSE connection is alive.
+  clearInterval(_scraperPollInterval);
+  _scraperPollInterval = setInterval(() => { loadScraperTable(); loadScraperRuns(); }, 5000);
   listenToStream(`/scraper/run/stream?${params}`, {
     log,
-    onDone: data => { buttons.forEach(button => { button.disabled = false; }); status.innerHTML = `<span class="run-ok">Done — fetched: ${data.fetched ?? 0}, skipped: ${data.skipped ?? 0}, errors: ${data.errors ?? 0}</span>`; refreshPipelineViews(); },
-    onError: data => { buttons.forEach(button => { button.disabled = false; }); status.innerHTML = `<span class="run-err">Failed: ${esc(data.message || "unknown error")}</span>`; },
+    onDone: data => {
+      clearInterval(_scraperPollInterval);
+      buttons.forEach(button => { button.disabled = false; });
+      status.innerHTML = `<span class="run-ok">Done — fetched: ${data.fetched ?? 0}, skipped: ${data.skipped ?? 0}, errors: ${data.errors ?? 0}</span>`;
+      refreshPipelineViews();
+    },
+    onError: data => {
+      clearInterval(_scraperPollInterval);
+      buttons.forEach(button => { button.disabled = false; });
+      status.innerHTML = `<span class="run-err">Failed: ${esc(data.message || "unknown error")}</span>`;
+      refreshPipelineViews();
+    },
   });
 }
 
