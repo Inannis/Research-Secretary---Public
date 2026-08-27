@@ -228,14 +228,18 @@
           </label>
           <label>Prefilter
             <select id="r-prefilter">
-              <option value="default" selected>Default — Llama 3.1 8B (Groq)</option>
+              <option value="default" selected>Default — Gemma 4 26B (Cloudflare, max effort)</option>
+              <option value="cloudflare">Cloudflare — Gemma 4 26B (max effort)</option>
+              <option value="mistral">Mistral — Small (high effort) → Large</option>
               <option value="groq">Groq — Llama 3.1 8B</option>
               <option value="off">Off (skip prefilter)</option>
             </select>
           </label>
           <label>Evaluate with
             <select id="r-eval-model">
-              <option value="default" selected>Default — Llama 3.3 70B (Groq)</option>
+              <option value="default" selected>Default — Qwen3.8 27B (Cloudflare, xhigh effort)</option>
+              <option value="cloudflare">Cloudflare — Qwen3.8 27B (xhigh effort)</option>
+              <option value="mistral">Mistral — Large → Small (high effort)</option>
               <option value="groq">Groq — Llama 3.3 70B</option>
               <option value="claude">Claude (VS Code) — Sonnet</option>
             </select>
@@ -285,14 +289,18 @@
         <div class="tool-controls">
           <label class="inline-label">Prefilter
             <select id="p-prefilter">
-              <option value="default" selected>Default — Llama 3.1 8B (Groq)</option>
+              <option value="default" selected>Default — Gemma 4 26B (Cloudflare, max effort)</option>
+              <option value="cloudflare">Cloudflare — Gemma 4 26B (max effort)</option>
+              <option value="mistral">Mistral — Small (high effort) → Large</option>
               <option value="groq">Groq — Llama 3.1 8B</option>
               <option value="off">Off (skip prefilter)</option>
             </select>
           </label>
           <label class="inline-label">Evaluate with
             <select id="p-eval-model">
-              <option value="default" selected>Default — Llama 3.3 70B (Groq)</option>
+              <option value="default" selected>Default — Qwen3.8 27B (Cloudflare, xhigh effort)</option>
+              <option value="cloudflare">Cloudflare — Qwen3.8 27B (xhigh effort)</option>
+              <option value="mistral">Mistral — Large → Small (high effort)</option>
               <option value="groq">Groq — Llama 3.3 70B</option>
               <option value="off">Off (prefilter only)</option>
             </select>
@@ -435,7 +443,7 @@
         const prefilter = $(prefilterId)?.value || "default";
         const evaluate = $(evalId)?.value || "default";
         return {
-          extractMode: evaluate === "off" ? "prefilter" : prefilter === "off" ? "max" : "quality",
+          extractMode: evaluate === "off" ? "prefilter-only" : prefilter === "off" ? "evaluation-only" : "default",
           prefilterProvider: prefilter === "default" || prefilter === "off" ? null : prefilter,
           extractProvider: evaluate === "default" || evaluate === "off" || evaluate === "claude" ? null : evaluate,
         };
