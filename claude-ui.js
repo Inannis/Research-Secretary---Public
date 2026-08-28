@@ -93,6 +93,7 @@ function syncClaudeControlState() {
   const pPrefilter = byId("p-prefilter");
   const pItems = byId("p-itemcount");
   const pipelineClaude = pEval?.value === "claude";
+  const pipelineCodex = pEval?.value === "codex";
 
   if (pPrefilter) {
     if (pipelineClaude) {
@@ -113,7 +114,13 @@ function syncClaudeControlState() {
   }
   const pBatchSize = byId("p-batch-size");
   const pMaxItems = byId("p-max-items");
-  if (pBatchSize) pBatchSize.disabled = pipelineClaude;
+  if (pBatchSize) {
+    if (pipelineCodex) pBatchSize.value = "1";
+    pBatchSize.disabled = pipelineClaude || pipelineCodex;
+    pBatchSize.title = pipelineCodex
+      ? "Codex Luna is hard-locked to one opportunity per fresh thread."
+      : "";
+  }
   if (pMaxItems) pMaxItems.disabled = pipelineClaude;
 
   const rEval = byId("r-eval-model");

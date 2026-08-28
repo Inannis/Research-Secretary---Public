@@ -3398,7 +3398,13 @@ async function loadPipelineRuns(page = 1) {
     const runs = await q(`
       SELECT id, status, extract_mode, source_filter, triggered_by, batches,
              gate_retries, cot_max_context_tokens, cot_output_tokens,
-             api_tokens_in, api_tokens_out, error_message,
+             api_tokens_in, api_tokens_out,
+             (SELECT COALESCE(SUM(lb.tokens_cached), 0)
+                FROM llm_batches lb
+               WHERE EXISTS (SELECT 1 FROM raw_scrape rs
+                              WHERE rs.llm_batch_id = lb.id
+                                AND rs.pipeline_run_id = pipeline_runs.id)) AS api_tokens_cached,
+             error_message,
              new_opportunities, rejected, eval_dropped, duplicates, errors, aggregators,
              started_at, finished_at,
              CAST((JULIANDAY(COALESCE(finished_at, datetime('now'))) - JULIANDAY(started_at)) * 86400 AS INTEGER) AS duration_seconds
@@ -3485,10 +3491,13 @@ async function loadPipelineRuns(page = 1) {
         ? `<button class="ps-delete-btn" title="Delete run and reset rows for reprocessing" onclick="event.stopPropagation();deletePipelineRun(${id})">✕</button>`
         : "";
       const fmtTok = n => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`;
+      const cacheNote = r.api_tokens_in > 0 && r.api_tokens_cached != null
+        ? ` <span title="Cached input tokens / total input tokens">cached ${fmtTok(r.api_tokens_cached)} (${((r.api_tokens_cached / r.api_tokens_in) * 100).toFixed(1)}%)</span>`
+        : "";
       const tokens = r.cot_max_context_tokens != null
         ? `<span title="Peak single-call context size">${fmtTok(r.cot_max_context_tokens)}</span> / <span title="Total output tokens generated">${fmtTok(r.cot_output_tokens || 0)}</span>`
         : r.api_tokens_in != null
-        ? `<span title="Total input tokens">${fmtTok(r.api_tokens_in)}</span>in / <span title="Total output tokens">${fmtTok(r.api_tokens_out || 0)}</span>out`
+        ? `<span title="Total input tokens">${fmtTok(r.api_tokens_in)}</span>in / <span title="Total output tokens">${fmtTok(r.api_tokens_out || 0)}</span>out${cacheNote}`
         : "—";
       return `<tr>
         <td class="ps-source">${modeLabel}</td>
@@ -3520,7 +3529,7 @@ async function loadPipelineRuns(page = 1) {
         <th class="ps-num" title="Aggregator candidates found and queued for review">Agg</th>
         <th class="ps-num">Errors</th>
         <th>Duration</th>
-        <th class="ps-num" title="Claude Code token usage for this run: peak single-call context size, then total output tokens generated">Tokens</th>
+        <th class="ps-num" title="LLM tokens for this run; Codex Luna also shows cached input tokens and the cache ratio">Tokens</th>
         <th></th>
       </tr></thead>
       <tbody>${rows}</tbody>
