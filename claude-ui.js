@@ -1,12 +1,12 @@
 // Operational UI enhancements layered on top of the canonical SPA.
 //
 // This module keeps the large app-core.js untouched. It adds the current
-// Claude per-item controls plus the durable-URL-state scraper mode selector,
+// Claude and Gemini per-item controls plus the durable-URL-state scraper mode selector,
 // then rewrites only the operational requests that need those newer routes or
 // parameters. The same code runs in the local FastAPI UI and the Pages bridge.
 
 const nativeFetch = window.fetch.bind(window);
-let claudePipelineActive = false;
+let activePipelineBackend = null;
 
 function byId(id) {
   return document.getElementById(id);
@@ -34,8 +34,12 @@ function ensurePipelineItemLimit() {
 
   const label = document.createElement("label");
   label.className = "inline-label";
-  label.title = "Maximum raw items for the Claude per-item run. Leave blank to drain the matching queue.";
-  label.append("Claude items ");
+  label.id = "p-itemcount-label";
+  label.title = "Maximum raw items for the per-item run. Leave blank to drain the matching queue.";
+  const labelText = document.createElement("span");
+  labelText.id = "p-itemcount-label-text";
+  labelText.textContent = "Claude items ";
+  label.appendChild(labelText);
   const input = document.createElement("input");
   input.id = "p-itemcount";
   input.type = "number";
@@ -92,7 +96,10 @@ function syncClaudeControlState() {
   const pEval = byId("p-eval-model");
   const pPrefilter = byId("p-prefilter");
   const pItems = byId("p-itemcount");
+  const pItemsLabel = byId("p-itemcount-label-text");
   const pipelineClaude = pEval?.value === "claude";
+  const pipelineGemini = pEval?.value === "gemini_per_item";
+  const isPerItem = pipelineClaude || pipelineGemini;
   const pipelineCodex = pEval?.value === "codex";
 
   if (pPrefilter) {
@@ -100,32 +107,39 @@ function syncClaudeControlState() {
       if (pPrefilter.value !== "claude") pPrefilter.value = "claude";
       pPrefilter.disabled = true;
       pPrefilter.title = "The current Claude per-item routine uses its own Claude prefilter before Claude evaluation.";
+    } else if (pipelineGemini) {
+      if (pPrefilter.value !== "gemini_per_item") pPrefilter.value = "gemini_per_item";
+      pPrefilter.disabled = true;
+      pPrefilter.title = "The Gemini per-item routine uses its own Gemini prefilter before Gemini evaluation.";
     } else {
       pPrefilter.disabled = false;
-      if (pPrefilter.value === "claude") pPrefilter.value = "default";
+      if (pPrefilter.value === "claude" || pPrefilter.value === "gemini_per_item") pPrefilter.value = "default";
       pPrefilter.title = "";
     }
   }
   if (pItems) {
-    pItems.disabled = !pipelineClaude;
-    pItems.title = pipelineClaude
+    pItems.disabled = !isPerItem;
+    if (pItemsLabel) {
+      pItemsLabel.textContent = pipelineGemini ? "Gemini items " : "Claude items ";
+    }
+    pItems.title = isPerItem
       ? "Maximum items to process; blank means drain the selected queue."
-      : "Item limit applies to the Claude per-item engine.";
+      : "Item limit applies to the per-item engine.";
   }
   const pBatchSize = byId("p-batch-size");
   const pMaxItems = byId("p-max-items");
   if (pBatchSize) {
     if (pipelineCodex) pBatchSize.value = "1";
-    pBatchSize.disabled = pipelineClaude || pipelineCodex;
+    pBatchSize.disabled = isPerItem || pipelineCodex;
     pBatchSize.title = pipelineCodex
       ? "Codex Luna is hard-locked to one opportunity per fresh thread."
       : "";
   }
-  if (pMaxItems) pMaxItems.disabled = pipelineClaude;
+  if (pMaxItems) pMaxItems.disabled = isPerItem;
 
   const rEval = byId("r-eval-model");
   const rPrefilter = byId("r-prefilter");
-  if (rEval?.value === "claude" && rPrefilter?.value === "off") {
+  if ((rEval?.value === "claude" || rEval?.value === "gemini_per_item") && rPrefilter?.value === "off") {
     rPrefilter.value = "default";
   }
 }
@@ -136,6 +150,10 @@ function enhanceControls() {
   const pEval = byId("p-eval-model");
   const pPrefilter = byId("p-prefilter");
   const rEval = byId("r-eval-model");
+
+  addOption(pPrefilter, "gemini_per_item", "Gemini — per-item prefilter (Antigravity)");
+  addOption(pEval, "gemini_per_item", "Gemini — per-item chain (Antigravity)");
+  addOption(rEval, "gemini_per_item", "Gemini — per-item evaluation (Antigravity)");
 
   addOption(pPrefilter, "claude", "Claude — per-item prefilter", { first: true });
   addOption(pEval, "claude", "Claude — per-item chain (current default)", { first: true });
@@ -173,33 +191,39 @@ function rewriteRunnerRequest(input, init) {
   }
 
   if (url.pathname === "/pipeline/run/stream") {
-    if (byId("p-eval-model")?.value !== "claude") {
-      claudePipelineActive = false;
+    const evalModel = byId("p-eval-model")?.value;
+    if (evalModel !== "claude" && evalModel !== "gemini_per_item") {
+      activePipelineBackend = null;
       return null;
     }
-    const rewritten = new URL("/pipeline/claude/stream", url.origin);
+    const backend = evalModel === "gemini_per_item" ? "gemini" : "claude";
+    const rewritten = new URL(`/pipeline/${backend}/stream`, url.origin);
     const source = url.searchParams.get("source");
     const itemcount = byId("p-itemcount")?.value?.trim();
     if (source) rewritten.searchParams.set("source", source);
     if (itemcount) rewritten.searchParams.set("itemcount", itemcount);
-    claudePipelineActive = true;
+    activePipelineBackend = backend;
     return [rewritten.toString(), init];
   }
 
-  if (url.pathname === "/pipeline/abort" && claudePipelineActive) {
-    return [new URL("/pipeline/claude/abort", url.origin).toString(), init];
+  if (url.pathname === "/pipeline/abort" && activePipelineBackend) {
+    return [new URL(`/pipeline/${activePipelineBackend}/abort`, url.origin).toString(), init];
   }
 
-  if (url.pathname === "/researcher/run/stream" && byId("r-eval-model")?.value === "claude") {
-    const rewritten = new URL("/researcher/claude/stream", url.origin);
-    const mode = byId("r-mode")?.value;
-    const limit = byId("r-limit")?.value?.trim();
-    const prefilter = byId("r-prefilter")?.value;
-    if (mode) rewritten.searchParams.set("mode", mode);
-    if (limit) rewritten.searchParams.set("limit", limit);
-    if (byId("r-deep")?.checked) rewritten.searchParams.set("deep", "true");
-    if (prefilter === "groq") rewritten.searchParams.set("prefilter_provider", "groq");
-    return [rewritten.toString(), init];
+  if (url.pathname === "/researcher/run/stream") {
+    const rEvalModel = byId("r-eval-model")?.value;
+    if (rEvalModel === "claude" || rEvalModel === "gemini_per_item") {
+      const backend = rEvalModel === "gemini_per_item" ? "gemini" : "claude";
+      const rewritten = new URL(`/researcher/${backend}/stream`, url.origin);
+      const mode = byId("r-mode")?.value;
+      const limit = byId("r-limit")?.value?.trim();
+      const prefilter = byId("r-prefilter")?.value;
+      if (mode) rewritten.searchParams.set("mode", mode);
+      if (limit) rewritten.searchParams.set("limit", limit);
+      if (byId("r-deep")?.checked) rewritten.searchParams.set("deep", "true");
+      if (prefilter === "groq") rewritten.searchParams.set("prefilter_provider", "groq");
+      return [rewritten.toString(), init];
+    }
   }
 
   return null;
