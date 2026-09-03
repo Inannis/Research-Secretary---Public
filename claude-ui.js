@@ -104,13 +104,13 @@ function syncClaudeControlState() {
 
   if (pPrefilter) {
     if (pipelineClaude) {
-      if (pPrefilter.value !== "claude") pPrefilter.value = "claude";
-      pPrefilter.disabled = true;
-      pPrefilter.title = "The current Claude per-item routine uses its own Claude prefilter before Claude evaluation.";
+      if (pPrefilter.value !== "claude" && pPrefilter.value !== "off") pPrefilter.value = "claude";
+      pPrefilter.disabled = false;
+      pPrefilter.title = "Choose Claude prefilter, or Off to evaluate directly without prefilter.";
     } else if (pipelineGemini) {
-      if (pPrefilter.value !== "gemini_per_item") pPrefilter.value = "gemini_per_item";
-      pPrefilter.disabled = true;
-      pPrefilter.title = "The Gemini per-item routine uses its own Gemini prefilter before Gemini evaluation.";
+      if (pPrefilter.value !== "gemini_per_item" && pPrefilter.value !== "off") pPrefilter.value = "gemini_per_item";
+      pPrefilter.disabled = false;
+      pPrefilter.title = "Choose Gemini prefilter, or Off to evaluate directly without prefilter.";
     } else {
       pPrefilter.disabled = false;
       if (pPrefilter.value === "claude" || pPrefilter.value === "gemini_per_item") pPrefilter.value = "default";
@@ -130,10 +130,12 @@ function syncClaudeControlState() {
   const pMaxItems = byId("p-max-items");
   if (pBatchSize) {
     if (pipelineCodex) pBatchSize.value = "1";
-    pBatchSize.disabled = isPerItem || pipelineCodex;
+    pBatchSize.disabled = pipelineCodex;
     pBatchSize.title = pipelineCodex
       ? "Codex Luna is hard-locked to one opportunity per fresh thread."
-      : "";
+      : isPerItem
+      ? "Turn size: N items per multi-turn conversation session (default 1)."
+      : "Items per API call.";
   }
   if (pMaxItems) pMaxItems.disabled = isPerItem;
 
@@ -199,9 +201,16 @@ function rewriteRunnerRequest(input, init) {
     const backend = evalModel === "gemini_per_item" ? "gemini" : "claude";
     const rewritten = new URL(`/pipeline/${backend}/stream`, url.origin);
     const source = url.searchParams.get("source");
-    const itemcount = byId("p-itemcount")?.value?.trim();
+    const itemCount = byId("p-itemcount")?.value?.trim();
+    const prefilterVal = byId("p-prefilter")?.value;
+    const mode = prefilterVal === "off" ? "evaluation-only" : "default";
+    const turnSize = byId("p-batch-size")?.value?.trim();
     if (source) rewritten.searchParams.set("source", source);
-    if (itemcount) rewritten.searchParams.set("itemcount", itemcount);
+    if (itemCount) rewritten.searchParams.set("item_count", itemCount);
+    if (mode) rewritten.searchParams.set("mode", mode);
+    if (turnSize && parseInt(turnSize, 10) > 1) {
+      rewritten.searchParams.set("turn_size", turnSize);
+    }
     activePipelineBackend = backend;
     return [rewritten.toString(), init];
   }

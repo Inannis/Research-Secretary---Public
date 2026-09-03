@@ -429,6 +429,32 @@
         return `${runnerBase}${path}`;
       }
 
+      function formatSyncTime(raw) {
+        if (!raw) return "";
+        let d;
+        if (typeof raw === "number") {
+          d = new Date(raw * 1000);
+        } else {
+          let str = String(raw).trim();
+          if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(str)) {
+            str = str.replace(" ", "T") + "Z";
+          } else if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(str) && !str.endsWith("Z") && !str.includes("+") && !str.includes("-", 10)) {
+            str = str + "Z";
+          }
+          d = new Date(str);
+        }
+        if (isNaN(d.getTime())) {
+          return String(raw).slice(0, 16);
+        }
+        const pad = n => String(n).padStart(2, "0");
+        const yr = d.getFullYear();
+        const mo = pad(d.getMonth() + 1);
+        const da = pad(d.getDate());
+        const hr = pad(d.getHours());
+        const mi = pad(d.getMinutes());
+        return `${yr}-${mo}-${da} ${hr}:${mi}`;
+      }
+
       function updateIndicator() {
         const el = $("local-runner-indicator");
         if (!el) return;
@@ -446,12 +472,18 @@
           return;
         }
         const state = runnerSync?.state;
-        const syncText = state === "synced" ? "✓ DB synced" : state === "out_of_sync" ? "⚠ DB out of sync" : "? DB sync unknown";
+        const lastSynced = formatSyncTime(runnerSync?.last_synced_at);
+        let syncText = "? DB sync unknown";
+        if (state === "synced") {
+          syncText = "✓ DB synced";
+        } else if (state === "out_of_sync") {
+          syncText = lastSynced ? `⚠ DB out of sync · last synced: ${lastSynced}` : "⚠ DB out of sync";
+        }
         el.textContent = `Local runner: ● connected · ${syncText}`;
         el.title = state === "synced"
           ? "Local SQLite matches Turso. Operational runs write locally and retain full HTML."
           : state === "out_of_sync"
-            ? "Local SQLite differs from Turso. Refresh it from Turso before starting a new local work session."
+            ? `Local SQLite differs from Turso${lastSynced ? ` · last synced: ${lastSynced}` : ""}. Refresh it from Turso before starting a new local work session.`
             : "Runner connected, but local SQLite could not be compared with Turso.";
         el.classList.add(state === "synced" ? "runner-ok" : state === "out_of_sync" ? "runner-warn" : "runner-off");
       }
