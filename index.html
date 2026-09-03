@@ -210,7 +210,7 @@
     <section id="researcher-view" class="hidden">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
         <button id="btn-back-researcher" class="btn-secondary">Back to list</button>
-        <span id="local-runner-indicator" class="runner-indicator runner-off" title="Checking for the loopback FastAPI runner">Local runner: checking…</span>
+        <span id="local-runner-indicator" class="runner-indicator runner-off" style="display:none;" title="Checking for the loopback FastAPI runner">Local runner: checking…</span>
       </div>
 
       <div class="tool-section">
@@ -311,11 +311,17 @@
               <option value="off">Off (prefilter only)</option>
             </select>
           </label>
-          <label class="inline-label" title="Items per LLM call for Groq/Mistral/Cloudflare/Gemini. Codex Luna is always one item per fresh thread. Leave blank for auto token-budget packing; 1 = true per-item calls.">Batch size
+          <label id="p-batch-size-label" class="inline-label" title="Items packed per LLM call for API models. Leave blank for auto token-budget packing; 1 = individual calls."><span id="p-batch-size-label-text">Batch size</span>
             <input type="number" id="p-batch-size" min="1" placeholder="auto" style="width:70px">
           </label>
-          <label class="inline-label" title="Total raw items to process this run for Groq/Mistral/Cloudflare/Gemini. Leave blank to drain the matching queue.">Max items
+          <label id="p-max-items-label" class="inline-label" title="Total raw items to process this run. Leave blank to drain the matching queue."><span id="p-max-items-label-text">Max items</span>
             <input type="number" id="p-max-items" min="1" placeholder="all" style="width:70px">
+          </label>
+          <label id="p-workers-label" class="inline-label" style="display:none;" title="Number of parallel runner workers for headless sessions (default 2)."><span id="p-workers-label-text">Runners</span>
+            <input type="number" id="p-workers" min="1" max="8" placeholder="2" style="width:55px">
+          </label>
+          <label id="p-backlog-label" class="inline-label" style="display:none;" title="Only process the eval backlog (items already prefiltered by a prior run). Do not pull fresh queue items.">
+            <input type="checkbox" id="p-backlog-only"> Backlog only
           </label>
           <button id="btn-run-pipeline" disabled title="Available in the local FastAPI console — requires the local scrape/extraction backend">Run</button>
           <button id="btn-refresh-pipeline" class="btn-secondary">Refresh</button>
@@ -390,7 +396,7 @@
   </main>
   </div>
 
-  <script type="module" src="app.js?v=20260902a"></script>
+  <script type="module" src="app.js?v=20260903b"></script>
   <script type="module">
     // Pages-only loopback bridge. The canonical app remains Turso-backed; this
     // layer probes a local FastAPI process and redirects only operational run
@@ -398,7 +404,11 @@
     // window.__DATA_SOURCE__="local", so the native local controls in app.js
     // remain authoritative and this bridge does nothing.
     (() => {
-      if (window.__DATA_SOURCE__ === "local") return;
+      if (window.__DATA_SOURCE__ === "local") {
+        const el = document.getElementById("local-runner-indicator");
+        if (el) el.style.display = "none";
+        return;
+      }
 
       const RUNNER_CANDIDATES = ["http://127.0.0.1:17865", "http://localhost:17865"];
       const OFFLINE_TITLE = "Start FastAPI on 127.0.0.1:17865 to enable operational runs from Pages";
@@ -458,6 +468,7 @@
       function updateIndicator() {
         const el = $("local-runner-indicator");
         if (!el) return;
+        el.style.display = "inline-block";
         el.classList.remove("runner-ok", "runner-warn", "runner-off");
         if (!runnerBase || !runnerHealth) {
           el.textContent = "Local runner: ○ offline";

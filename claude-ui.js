@@ -6,7 +6,9 @@
 // parameters. The same code runs in the local FastAPI UI and the Pages bridge.
 
 const nativeFetch = window.fetch.bind(window);
+const NativeEventSource = typeof window !== "undefined" ? window.EventSource : undefined;
 let activePipelineBackend = null;
+let activeResearcherBackend = null;
 
 function byId(id) {
   return document.getElementById(id);
@@ -24,30 +26,11 @@ function addOption(select, value, label, { first = false } = {}) {
 function ensureRunnerIndicatorVisible() {
   const indicator = byId("local-runner-indicator");
   if (!indicator) return;
+  if (window.__DATA_SOURCE__ === "local") {
+    indicator.style.display = "none";
+    return;
+  }
   indicator.style.display = "inline-block";
-}
-
-function ensurePipelineItemLimit() {
-  if (byId("p-itemcount")) return;
-  const runButton = byId("btn-run-pipeline");
-  if (!runButton?.parentElement) return;
-
-  const label = document.createElement("label");
-  label.className = "inline-label";
-  label.id = "p-itemcount-label";
-  label.title = "Maximum raw items for the per-item run. Leave blank to drain the matching queue.";
-  const labelText = document.createElement("span");
-  labelText.id = "p-itemcount-label-text";
-  labelText.textContent = "Claude items ";
-  label.appendChild(labelText);
-  const input = document.createElement("input");
-  input.id = "p-itemcount";
-  input.type = "number";
-  input.min = "1";
-  input.placeholder = "all";
-  input.style.width = "82px";
-  label.appendChild(input);
-  runButton.parentElement.insertBefore(label, runButton);
 }
 
 function ensureScraperModeControl() {
@@ -95,12 +78,14 @@ function ensureScraperModeControl() {
 function syncClaudeControlState() {
   const pEval = byId("p-eval-model");
   const pPrefilter = byId("p-prefilter");
-  const pItems = byId("p-itemcount");
-  const pItemsLabel = byId("p-itemcount-label-text");
   const pipelineClaude = pEval?.value === "claude";
   const pipelineGemini = pEval?.value === "gemini_per_item";
   const isPerItem = pipelineClaude || pipelineGemini;
   const pipelineCodex = pEval?.value === "codex";
+
+  // Clean up any legacy injected duplicate item limit label if present
+  const legacyItemCount = byId("p-itemcount-label");
+  if (legacyItemCount) legacyItemCount.remove();
 
   if (pPrefilter) {
     if (pipelineClaude) {
@@ -117,27 +102,54 @@ function syncClaudeControlState() {
       pPrefilter.title = "";
     }
   }
-  if (pItems) {
-    pItems.disabled = !isPerItem;
-    if (pItemsLabel) {
-      pItemsLabel.textContent = pipelineGemini ? "Gemini items " : "Claude items ";
-    }
-    pItems.title = isPerItem
-      ? "Maximum items to process; blank means drain the selected queue."
-      : "Item limit applies to the per-item engine.";
-  }
+
   const pBatchSize = byId("p-batch-size");
+  const pBatchLabel = byId("p-batch-size-label-text");
+  const pBatchContainer = byId("p-batch-size-label");
   const pMaxItems = byId("p-max-items");
+  const pWorkersLabel = byId("p-workers-label");
+  const pBacklogLabel = byId("p-backlog-label");
+
   if (pBatchSize) {
-    if (pipelineCodex) pBatchSize.value = "1";
-    pBatchSize.disabled = pipelineCodex;
-    pBatchSize.title = pipelineCodex
-      ? "Codex Luna is hard-locked to one opportunity per fresh thread."
-      : isPerItem
-      ? "Turn size: N items per multi-turn conversation session (default 1)."
-      : "Items per API call.";
+    if (pipelineCodex) {
+      pBatchSize.value = "1";
+      pBatchSize.disabled = true;
+      if (pBatchLabel) pBatchLabel.textContent = "Batch size";
+      pBatchSize.placeholder = "1";
+      const title = "Codex Luna is hard-locked to one opportunity per fresh thread.";
+      pBatchSize.title = title;
+      if (pBatchContainer) pBatchContainer.title = title;
+    } else if (isPerItem) {
+      pBatchSize.disabled = false;
+      if (pBatchLabel) pBatchLabel.textContent = "Items / turn";
+      pBatchSize.placeholder = "1";
+      const title = "Items processed per headless session turn (turn size). Default is 1; >1 reuses session context across turns to save prompt and thinking tokens.";
+      pBatchSize.title = title;
+      if (pBatchContainer) pBatchContainer.title = title;
+    } else {
+      pBatchSize.disabled = false;
+      if (pBatchLabel) pBatchLabel.textContent = "Batch size";
+      pBatchSize.placeholder = "auto";
+      const title = "Items packed per LLM call for API models. Leave blank for auto token-budget packing; 1 = individual calls.";
+      pBatchSize.title = title;
+      if (pBatchContainer) pBatchContainer.title = title;
+    }
   }
-  if (pMaxItems) pMaxItems.disabled = isPerItem;
+
+  if (pMaxItems) {
+    pMaxItems.disabled = false;
+    pMaxItems.placeholder = "all";
+    pMaxItems.title = isPerItem
+      ? "Maximum items to process for this per-item run. Leave blank to drain the queue."
+      : "Total raw items to process this run for API models. Leave blank to drain the matching queue.";
+  }
+
+  if (pWorkersLabel) {
+    pWorkersLabel.style.display = isPerItem ? "inline-flex" : "none";
+  }
+  if (pBacklogLabel) {
+    pBacklogLabel.style.display = isPerItem ? "inline-flex" : "none";
+  }
 
   const rEval = byId("r-eval-model");
   const rPrefilter = byId("r-prefilter");
@@ -165,7 +177,6 @@ function enhanceControls() {
   const researcherClaude = rEval && [...rEval.options].find(option => option.value === "claude");
   if (researcherClaude) researcherClaude.textContent = "Claude — per-item evaluation";
 
-  ensurePipelineItemLimit();
   ensureScraperModeControl();
   pEval?.addEventListener("change", syncClaudeControlState);
   pPrefilter?.addEventListener("change", syncClaudeControlState);
@@ -196,20 +207,36 @@ function rewriteRunnerRequest(input, init) {
     const evalModel = byId("p-eval-model")?.value;
     if (evalModel !== "claude" && evalModel !== "gemini_per_item") {
       activePipelineBackend = null;
-      return null;
+      const batchSize = byId("p-batch-size")?.value?.trim();
+      const maxItems = byId("p-max-items")?.value?.trim();
+      if (batchSize && !url.searchParams.has("max_batch_items")) url.searchParams.set("max_batch_items", batchSize);
+      if (maxItems && !url.searchParams.has("max_items")) url.searchParams.set("max_items", maxItems);
+      return [url.toString(), init];
     }
     const backend = evalModel === "gemini_per_item" ? "gemini" : "claude";
     const rewritten = new URL(`/pipeline/${backend}/stream`, url.origin);
     const source = url.searchParams.get("source");
-    const itemCount = byId("p-itemcount")?.value?.trim();
+    const itemCount = byId("p-max-items")?.value?.trim() || url.searchParams.get("max_items") || url.searchParams.get("item_count");
     const prefilterVal = byId("p-prefilter")?.value;
     const mode = prefilterVal === "off" ? "evaluation-only" : "default";
-    const turnSize = byId("p-batch-size")?.value?.trim();
+    const turnSize = byId("p-batch-size")?.value?.trim() || url.searchParams.get("max_batch_items") || url.searchParams.get("turn_size");
+    const workers = byId("p-workers")?.value?.trim() || url.searchParams.get("workers");
+    const backlogOnly = byId("p-backlog-only")?.checked || url.searchParams.get("drain_prefilter_backlog") === "true";
     if (source) rewritten.searchParams.set("source", source);
-    if (itemCount) rewritten.searchParams.set("item_count", itemCount);
+    if (itemCount) {
+      rewritten.searchParams.set("item_count", itemCount);
+      rewritten.searchParams.set("max_items", itemCount);
+    }
     if (mode) rewritten.searchParams.set("mode", mode);
-    if (turnSize && parseInt(turnSize, 10) > 1) {
+    if (turnSize && parseInt(turnSize, 10) >= 1) {
       rewritten.searchParams.set("turn_size", turnSize);
+      rewritten.searchParams.set("max_batch_items", turnSize);
+    }
+    if (workers && parseInt(workers, 10) >= 1) {
+      rewritten.searchParams.set("workers", workers);
+    }
+    if (backlogOnly) {
+      rewritten.searchParams.set("drain_prefilter_backlog", "true");
     }
     activePipelineBackend = backend;
     return [rewritten.toString(), init];
@@ -231,8 +258,13 @@ function rewriteRunnerRequest(input, init) {
       if (limit) rewritten.searchParams.set("limit", limit);
       if (byId("r-deep")?.checked) rewritten.searchParams.set("deep", "true");
       if (prefilter === "groq") rewritten.searchParams.set("prefilter_provider", "groq");
+      activeResearcherBackend = backend;
       return [rewritten.toString(), init];
     }
+  }
+
+  if (url.pathname === "/researcher/abort" && activeResearcherBackend) {
+    return [new URL(`/researcher/${activeResearcherBackend}/abort`, url.origin).toString(), init];
   }
 
   return null;
@@ -243,6 +275,21 @@ window.fetch = function patchedFetch(input, init) {
   if (rewritten) return nativeFetch(rewritten[0], rewritten[1]);
   return nativeFetch(input, init);
 };
+
+if (NativeEventSource) {
+  class PatchedEventSource extends NativeEventSource {
+    constructor(url, init) {
+      const rewritten = rewriteRunnerRequest(url, init);
+      const targetUrl = rewritten ? rewritten[0] : url;
+      if (init !== undefined) {
+        super(targetUrl, init);
+      } else {
+        super(targetUrl);
+      }
+    }
+  }
+  window.EventSource = PatchedEventSource;
+}
 
 if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", enhanceControls, { once: true });

@@ -4280,6 +4280,10 @@ function runPipeline() {
   const params = new URLSearchParams({ extract_mode: extractMode });
   if (prefilterProvider) params.set("prefilter_provider", prefilterProvider);
   if (extractProvider) params.set("extract_provider", extractProvider);
+  const batchSize = document.getElementById("p-batch-size")?.value?.trim();
+  const maxItems = document.getElementById("p-max-items")?.value?.trim();
+  if (batchSize) params.set("max_batch_items", batchSize);
+  if (maxItems) params.set("max_items", maxItems);
   log.innerHTML = ""; button.textContent = "Stop"; button.onclick = stopPipeline; status.innerHTML = '<span class="run-running">Pipeline running…</span>';
   _localPipelineStream = listenToStream(`/pipeline/run/stream?${params}`, {
     log,
