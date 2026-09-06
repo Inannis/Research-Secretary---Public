@@ -3006,8 +3006,7 @@ const _REJECT_GROUP_CLAUSE = {
   prefilter: " AND rs.skip_reason = 'prefilter_not_opportunity' AND rs.aggregator_note IS NULL",
   prefilter_passed: ` AND rs.skip_reason IS NULL AND rs.error IS NULL AND rs.prefilter_signals IS NOT NULL
                        AND rs.aggregator_note IS NULL AND rs.llm_batch_id IS NULL`,
-  cross_listing: " AND rs.rejection_reason LIKE 'cross_listing:%'",
-  dedup: " AND rs.skip_reason IN ('duplicate_pending_url', 'known_url_unchanged')",
+  dedup: " AND (rs.skip_reason IN ('duplicate_pending_url', 'known_url_unchanged', 'url_hash_conflict') OR rs.rejection_reason LIKE 'cross_listing:%')",
 };
 
 // Outcome mapped only for the groups that ARE per-URL terminal state.
@@ -3330,7 +3329,7 @@ async function showRunCountPanel(runId, group, after, before) {
         WHERE rs.processed = 1 AND rs.error IS NULL AND rs.pipeline_run_id = ?
         ORDER BY rs.processed_at DESC LIMIT 2000
       `, [runId]);
-    } else if (group === "cross_listing") {
+    } else if (group === "cross_listing" || group === "dedup") {
       isExtracted = true;
       rows = await q(`
         SELECT DISTINCT o.id, o.title, o.url, o.deadline, COALESCE(o.manual_tier, o.llm_tier) AS tier,
@@ -3354,8 +3353,21 @@ async function showRunCountPanel(runId, group, after, before) {
         LEFT JOIN researcher_runs rr ON ql.run_id = rr.id
         WHERE rs.processed = 1 AND rs.error IS NULL AND rs.skip_reason = 'url_hash_conflict'
               AND rs.pipeline_run_id = ?
+        UNION
+        SELECT DISTINCT 0 AS id,
+               CASE WHEN rs.skip_reason = 'duplicate_pending_url' THEN '(Duplicate pending URL)'
+                    WHEN rs.skip_reason = 'known_url_unchanged' THEN '(Known URL unchanged)'
+                    ELSE COALESCE(rs.skip_reason, '(Duplicate)') END AS title,
+               rs.url, NULL AS deadline, NULL AS tier,
+               rs.scraped_at, ${_SOURCE_SQL_EXPR} AS source
+        FROM raw_scrape rs
+        LEFT JOIN sources s ON rs.source_id = s.id
+        LEFT JOIN query_log ql ON rs.query_id = ql.id
+        LEFT JOIN researcher_runs rr ON ql.run_id = rr.id
+        WHERE rs.processed = 1 AND rs.error IS NULL AND rs.skip_reason IN ('duplicate_pending_url', 'known_url_unchanged')
+              AND rs.pipeline_run_id = ?
         ORDER BY scraped_at DESC LIMIT 2000
-      `, [runId, runId]);
+      `, [runId, runId, runId]);
     } else if (group === "errors") {
       const raw = await q(`
         SELECT rs.url, rs.raw_text, rs.scraped_at, rs.error, ${_SOURCE_SQL_EXPR} AS source
@@ -3366,27 +3378,36 @@ async function showRunCountPanel(runId, group, after, before) {
         WHERE rs.error IS NOT NULL AND rs.pipeline_run_id = ?
         ORDER BY rs.scraped_at DESC LIMIT 2000
       `, [runId]);
-      if (raw.length === 0) {
-        const pr = (await q("SELECT error_message, errors FROM pipeline_runs WHERE id=?", [runId]))[0];
-        if (pr && (pr.error_message || pr.errors)) {
-          rows = [{
-            url: `Run #${runId} summary`,
-            source: "runner",
-            scraped_at: after || null,
-            rejection_reason: pr.error_message || `${pr.errors} error(s) during processing`,
-            rejection_kind: null,
-            snippet: "These items encountered LLM/network errors during processing. They were left unprocessed in raw_scrape so they can be re-attempted on the next run.",
-          }];
-        } else {
-          rows = [];
-        }
-      } else {
-        rows = raw.map(r => ({
-          url: r.url, source: r.source, scraped_at: r.scraped_at,
-          rejection_reason: r.error, rejection_kind: null,
-          snippet: r.raw_text ? r.raw_text.slice(0, 400).trim() : null,
-        }));
+      const pr = (await q("SELECT error_message, errors, started_at FROM pipeline_runs WHERE id=?", [runId]))[0];
+      const storedErrors = (pr && pr.errors) || 0;
+      if (raw.length === 0 && storedErrors > 0) {
+        if (_plRunPanelKey !== key) return;
+        const closeBtn = `<button class="run-detail-close" onclick="${esc(closeJs)}">close</button>`;
+        panel.innerHTML = `
+          <div class="psb-title">Run #${runId} — Errors (${storedErrors}) ${closeBtn}</div>
+          <div class="psb-source-group">Runner-level errors (${storedErrors})</div>
+          <div style="margin:12px 0;padding:14px 16px;background:#fff8f6;border:1px solid #f2cfc7;border-radius:6px;">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+              <span class="ps-err-inline" style="padding:2px 8px;border-radius:4px;font-weight:600;font-size:12px;">${storedErrors} errors</span>
+              <span style="color:#666;font-size:12px;">${esc(fmtDateTimeLocal(pr.started_at))}</span>
+            </div>
+            <div style="font-weight:600;color:#c92a2a;margin-bottom:8px;font-family:monospace;font-size:13px;word-break:break-word;">
+              ${esc(pr.error_message || `${storedErrors} errors during processing`)}
+            </div>
+            <div style="font-size:13px;color:#444;line-height:1.5;">
+              These <strong>${storedErrors} queue items</strong> encountered runner-level failures during processing (e.g. network/API connection drops).<br><br>
+              To preserve retry queue semantics, transiently failed items are <em>not</em> stamped with error flags in <code>raw_scrape</code>. 
+              They remain in the pending queue (<code>processed = 0</code>) and are automatically picked up and re-attempted on subsequent runs.
+            </div>
+          </div>
+        `;
+        return;
       }
+      rows = raw.map(r => ({
+        url: r.url, source: r.source, scraped_at: r.scraped_at,
+        rejection_reason: r.error, rejection_kind: null,
+        snippet: r.raw_text ? r.raw_text.slice(0, 400).trim() : null,
+      }));
     } else {
       const g = group === "prefilter" ? "prefilter" : group === "prefilter_passed" ? "prefilter_passed" : group === "dedup" ? "dedup" : "llm_rejected";
       rows = await _fetchRejectedList("__all__", g, runId);
@@ -3520,8 +3541,7 @@ async function loadPipelineRuns(page = 1) {
       // e.g. an older run predating the pipeline_run_id attribution fix) would just
       // show "None found" even though the number itself is accurate.
       const staleTitle = ' title="Stored total from when this run finished — no live rows are still attributed to this run to list individually"';
-      const isClaudeRun = r.extract_mode && (r.extract_mode === "claude" || r.extract_mode === "claude_prefilter");
-      const dupGroup = isClaudeRun ? "cross_listing" : "dedup";
+      const dupGroup = "dedup";
       const mkBtn = (n, group, cls, customTitle) => {
         if (n <= 0) return "";
         const canClick = hasLive || (group === "errors" && (r.error_message || storedErrors > 0));
@@ -3974,9 +3994,11 @@ async function loadScraperRuns() {
       const dur = r.duration_seconds != null
         ? (r.duration_seconds < 60 ? `${r.duration_seconds}s` : `${Math.round(r.duration_seconds / 60)}m`)
         : "—";
-      const statusClass = r.status === "completed" ? "run-ok" : r.status === "failed" ? "run-err" : "run-running";
-      const statusText = r.status === "failed" && r.error_message
-        ? `failed: ${esc(r.error_message.slice(0, 40))}`
+      const statusClass = r.status === "completed" ? "run-ok"
+        : (r.status === "failed" || r.status === "aborted") ? "run-err"
+        : "run-running";
+      const statusText = (r.status === "failed" || r.status === "aborted") && r.error_message
+        ? `${esc(r.status)}: ${esc(r.error_message.slice(0, 40))}`
         : esc(r.status);
       return `<tr>
         <td class="ps-source">${esc(r.target)}</td>
