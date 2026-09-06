@@ -121,9 +121,9 @@ function syncClaudeControlState() {
       if (pBatchContainer) pBatchContainer.title = title;
     } else if (isPerItem) {
       pBatchSize.disabled = false;
-      if (pBatchLabel) pBatchLabel.textContent = "Items / turn";
+      if (pBatchLabel) pBatchLabel.textContent = "Turns / session";
       pBatchSize.placeholder = "1";
-      const title = "Items processed per headless session turn (turn size). Default is 1; >1 reuses session context across turns to save prompt and thinking tokens.";
+      const title = "Number of item turns to process in one reused Claude/Gemini conversation. 1 = a fresh session per item; higher values reuse context across items.";
       pBatchSize.title = title;
       if (pBatchContainer) pBatchContainer.title = title;
     } else {

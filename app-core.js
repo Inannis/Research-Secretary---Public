@@ -3366,11 +3366,27 @@ async function showRunCountPanel(runId, group, after, before) {
         WHERE rs.error IS NOT NULL AND rs.pipeline_run_id = ?
         ORDER BY rs.scraped_at DESC LIMIT 2000
       `, [runId]);
-      rows = raw.map(r => ({
-        url: r.url, source: r.source, scraped_at: r.scraped_at,
-        rejection_reason: r.error, rejection_kind: null,
-        snippet: r.raw_text ? r.raw_text.slice(0, 400).trim() : null,
-      }));
+      if (raw.length === 0) {
+        const pr = (await q("SELECT error_message, errors FROM pipeline_runs WHERE id=?", [runId]))[0];
+        if (pr && (pr.error_message || pr.errors)) {
+          rows = [{
+            url: `Run #${runId} summary`,
+            source: "runner",
+            scraped_at: after || null,
+            rejection_reason: pr.error_message || `${pr.errors} error(s) during processing`,
+            rejection_kind: null,
+            snippet: "These items encountered LLM/network errors during processing. They were left unprocessed in raw_scrape so they can be re-attempted on the next run.",
+          }];
+        } else {
+          rows = [];
+        }
+      } else {
+        rows = raw.map(r => ({
+          url: r.url, source: r.source, scraped_at: r.scraped_at,
+          rejection_reason: r.error, rejection_kind: null,
+          snippet: r.raw_text ? r.raw_text.slice(0, 400).trim() : null,
+        }));
+      }
     } else {
       const g = group === "prefilter" ? "prefilter" : group === "prefilter_passed" ? "prefilter_passed" : group === "dedup" ? "dedup" : "llm_rejected";
       rows = await _fetchRejectedList("__all__", g, runId);
@@ -3442,14 +3458,50 @@ async function loadPipelineRuns(page = 1) {
       const dur = r.duration_seconds != null
         ? (r.duration_seconds < 60 ? `${r.duration_seconds}s` : `${Math.round(r.duration_seconds / 60)}m`)
         : "—";
-      const statusClass = r.status === "completed" ? "run-ok"
+      const live = liveByRun[r.id];
+      const hasLive = !!live && (live.live_total || 0) > 0;
+      const ext    = hasLive ? (live.live_extracted || 0)        : (r.new_opportunities || 0);
+      const pfPass = hasLive ? (live.live_prefilter_passed || 0) : 0;
+      const pf     = hasLive ? (live.live_prefilter || 0)        : (r.rejected || 0);
+      const ev     = hasLive ? (live.live_eval || 0)             : (r.eval_dropped || 0);
+      const dup    = hasLive ? (live.live_dedup || 0)            : (r.duplicates || 0);
+      const storedErrors = r.errors || 0;
+      const liveErrors = live ? (live.live_errors || 0) : 0;
+      const err    = Math.max(liveErrors, storedErrors);
+      const unrecordedErrors = Math.max(0, storedErrors - liveErrors);
+      const agg    = hasLive ? (live.live_aggregators || 0)      : (r.aggregators || 0);
+      const total = hasLive ? ((live.live_total || 0) + unrecordedErrors) : (ext + pf + ev + dup + err);
+
+      let errType = null;
+      if (r.error_message) {
+        const emLower = r.error_message.toLowerCase();
+        if (emLower.includes("network") || emLower.includes("dial tcp") || emLower.includes("lookup ") || emLower.includes("connection")) {
+          errType = "network";
+        } else if (emLower.includes("rate limit") || emLower.includes("token limit") || emLower.includes("quota") || emLower.includes("429") || emLower.includes("503") || emLower.includes("unavailable")) {
+          errType = "rate limit";
+        } else if (emLower.includes("parse")) {
+          errType = "parse";
+        } else if (emLower.includes("auth") || emLower.includes("not found")) {
+          errType = "auth";
+        } else {
+          errType = "error";
+        }
+      } else if (r.status === "token_limit") {
+        errType = "rate limit";
+      }
+
+      const statusClass = r.status === "completed" ? (err > 0 ? "run-warn" : "run-ok")
         : (r.status === "failed" || r.status === "aborted") ? "run-err"
         : r.status === "token_limit" ? "run-warn"
         : "run-running";
       const statusLabel = r.status === "token_limit" ? "token limit" : r.status;
-      let statusText = (r.status === "failed" || r.status === "aborted" || r.status === "token_limit") && r.error_message
-        ? `${esc(statusLabel)}: ${esc(r.error_message.split(" — ")[0].slice(0, 40))}`
-        : esc(statusLabel);
+      let statusText = esc(statusLabel);
+      if (r.status === "completed" && err > 0) {
+        const errDetail = errType ? `${err} err · ${errType}` : `${err} err`;
+        statusText = `${esc(statusLabel)} <span class="run-gate-note" title="${esc(r.error_message || `${err} error(s)`)}">(${esc(errDetail)})</span>`;
+      } else if ((r.status === "failed" || r.status === "aborted" || r.status === "token_limit") && r.error_message) {
+        statusText = `${esc(statusLabel)}: ${esc(r.error_message.split(" — ")[0].slice(0, 45))}`;
+      }
       if (r.gate_retries > 0 && r.status === "completed") {
         statusText += ` <span class="run-gate-note" title="Proof-of-read gate rejected and retried this many times before passing">(${r.gate_retries} gate retr${r.gate_retries === 1 ? "y" : "ies"})</span>`;
       }
@@ -3460,16 +3512,6 @@ async function loadPipelineRuns(page = 1) {
         ? `${esc(r.extract_mode || "default")} · ${esc(r.source_filter.slice(0, 30))}`
         : esc(r.extract_mode || "default")) + scheduledBadge;
       const id = r.id;
-      const live = liveByRun[r.id];
-      const hasLive = !!live && (live.live_total || 0) > 0;
-      const ext    = hasLive ? (live.live_extracted || 0)        : (r.new_opportunities || 0);
-      const pfPass = hasLive ? (live.live_prefilter_passed || 0) : 0;
-      const pf     = hasLive ? (live.live_prefilter || 0)        : (r.rejected || 0);
-      const ev     = hasLive ? (live.live_eval || 0)             : (r.eval_dropped || 0);
-      const dup    = hasLive ? (live.live_dedup || 0)            : (r.duplicates || 0);
-      const err    = hasLive ? (live.live_errors || 0)           : (r.errors || 0);
-      const agg    = hasLive ? (live.live_aggregators || 0)      : (r.aggregators || 0);
-      const total = hasLive ? (live.live_total || 0) : (ext + pf + ev + dup + err);
       const t0 = r.started_at || "";
       const t1 = r.finished_at || "";
       // A count is only clickable when it's backed by live raw_scrape rows still
@@ -3480,12 +3522,15 @@ async function loadPipelineRuns(page = 1) {
       const staleTitle = ' title="Stored total from when this run finished — no live rows are still attributed to this run to list individually"';
       const isClaudeRun = r.extract_mode && (r.extract_mode === "claude" || r.extract_mode === "claude_prefilter");
       const dupGroup = isClaudeRun ? "cross_listing" : "dedup";
-      const mkBtn = (n, group, cls) => {
+      const mkBtn = (n, group, cls, customTitle) => {
         if (n <= 0) return "";
-        return hasLive
-          ? `<button class="ps-breakdown-btn ${cls}" onclick="event.stopPropagation();showRunCountPanel(${id},'${group}','${t0}','${t1}')">${n}</button>`
+        const canClick = hasLive || (group === "errors" && (r.error_message || storedErrors > 0));
+        const titleAttr = customTitle ? ` title="${esc(customTitle)}"` : (canClick ? "" : staleTitle);
+        return canClick
+          ? `<button class="ps-breakdown-btn ${cls}"${titleAttr} onclick="event.stopPropagation();showRunCountPanel(${id},'${group}','${t0}','${t1}')">${n}</button>`
           : `<span class="ps-num"${staleTitle}>${n}</span>`;
       };
+      const errTitle = r.error_message || (errType ? `${err} ${errType} errors` : `${err} errors`);
       const canDelete = r.status !== "running";
       const deleteBtn = canDelete
         ? `<button class="ps-delete-btn" title="Delete run and reset rows for reprocessing" onclick="event.stopPropagation();deletePipelineRun(${id})">✕</button>`
@@ -3511,7 +3556,7 @@ async function loadPipelineRuns(page = 1) {
         <td class="ps-num">${mkBtn(ev, "eval", "ps-err-inline")}</td>
         <td class="ps-num">${mkBtn(dup, dupGroup, "ps-err-inline")}</td>
         <td class="ps-num">${agg > 0 ? (hasLive ? `<button class="ps-breakdown-btn ps-agg" onclick="event.stopPropagation();showRunCountPanel(${id},'aggregators','${t0}','${t1}')">${agg}</button>` : `<span class="ps-num"${staleTitle}>${agg}</span>`) : ""}</td>
-        <td class="ps-num">${mkBtn(err, "errors", "ps-err")}</td>
+        <td class="ps-num">${mkBtn(err, "errors", "ps-err", errTitle)}</td>
         <td>${dur}</td>
         <td class="ps-num">${tokens}</td>
         <td>${deleteBtn}</td>
