@@ -3297,6 +3297,101 @@ function _runPanelPage(page) {
   panel.innerHTML = _groupedUrlListHtml(_runPanelRows, _runPanelMeta.label, _runPanelMeta.closeJs, _runPanelMeta.isExtracted, page);
 }
 
+function parseRunnerErrorGroups(errorMessage, storedErrors = 0) {
+  if (!errorMessage) {
+    return [{
+      type: "error",
+      count: storedErrors || 1,
+      snippet: `${storedErrors || 1} error(s) during processing`,
+      description: `These <strong>${storedErrors || 1} queue item${(storedErrors || 1) === 1 ? "" : "s"}</strong> encountered runner-level failures during processing.`,
+    }];
+  }
+
+  // Check for breakdown in parentheses: e.g. "10 errors (9 network, 1 other)" or "21 errors (network)"
+  const parenMatch = errorMessage.match(/\(([^)]+)\)/);
+  const afterDash = errorMessage.includes(" — ") ? errorMessage.split(" — ").slice(1).join(" — ").trim() : "";
+
+  if (parenMatch) {
+    const rawBreakdown = parenMatch[1];
+    const parts = rawBreakdown.split(",").map(s => s.trim()).filter(Boolean);
+
+    // Check if afterDash has per-type breakdown: e.g. "9 network: ... | 1 other: ..."
+    const perTypeSamples = {};
+    if (afterDash.includes(" | ")) {
+      for (const seg of afterDash.split(" | ")) {
+        const colonIdx = seg.indexOf(":");
+        if (colonIdx > 0) {
+          const header = seg.slice(0, colonIdx).trim().toLowerCase();
+          const sample = seg.slice(colonIdx + 1).trim();
+          perTypeSamples[header] = sample;
+        }
+      }
+    }
+
+    const groups = [];
+    for (const part of parts) {
+      const m = part.match(/^(\d+)\s+(.+)$/);
+      const count = m ? parseInt(m[1], 10) : (parts.length === 1 ? storedErrors : 1);
+      const type = (m ? m[2] : part).toLowerCase().trim();
+
+      let snippet = "";
+      for (const [k, v] of Object.entries(perTypeSamples)) {
+        if (k.includes(type)) {
+          snippet = v;
+          break;
+        }
+      }
+      if (!snippet && afterDash) {
+        if (parts.length === 1) {
+          snippet = afterDash;
+        } else {
+          const adLower = afterDash.toLowerCase();
+          if (type === "network" && (adLower.includes("google") || adLower.includes("tcp") || adLower.includes("timeout") || adLower.includes("connection") || adLower.includes("timed out") || adLower.includes("network") || adLower.includes("lookup"))) {
+            snippet = afterDash;
+          } else if (type === "rate_limit" && (adLower.includes("rate limit") || adLower.includes("quota") || adLower.includes("429") || adLower.includes("503"))) {
+            snippet = afterDash;
+          } else if (type === "auth" && (adLower.includes("auth") || adLower.includes("unauthorized") || adLower.includes("key"))) {
+            snippet = afterDash;
+          } else if (type === "parse" && adLower.includes("parse")) {
+            snippet = afterDash;
+          } else if (type === "other" && (adLower.includes("cancel") || adLower.includes("denied") || adLower.includes("error"))) {
+            snippet = afterDash;
+          }
+        }
+      }
+
+      let description = "";
+      if (type === "network") {
+        description = `These <strong>${count} queue item${count === 1 ? "" : "s"}</strong> encountered network or connection failures (e.g. network/API connection drops, timeouts, DNS/socket failures).`;
+      } else if (type === "rate_limit") {
+        description = `These <strong>${count} queue item${count === 1 ? "" : "s"}</strong> hit model provider usage, token, or rate limits.`;
+      } else if (type === "auth") {
+        description = `These <strong>${count} queue item${count === 1 ? "" : "s"}</strong> encountered authentication, credential, or authorization failures.`;
+      } else if (type === "parse") {
+        description = `These <strong>${count} queue item${count === 1 ? "" : "s"}</strong> encountered output parsing errors from the model response.`;
+      } else {
+        description = `These <strong>${count} queue item${count === 1 ? "" : "s"}</strong> encountered unclassified runner-level errors (e.g. tool execution cancellations or unhandled errors).`;
+      }
+
+      groups.push({
+        type,
+        count,
+        snippet: snippet || (type === "other" ? "Unclassified runner failure" : ""),
+        description,
+      });
+    }
+
+    if (groups.length > 0) return groups;
+  }
+
+  return [{
+    type: "error",
+    count: storedErrors || 1,
+    snippet: afterDash || errorMessage,
+    description: `These <strong>${storedErrors || 1} queue item${(storedErrors || 1) === 1 ? "" : "s"}</strong> encountered runner-level failures during processing.`,
+  }];
+}
+
 async function showRunCountPanel(runId, group, after, before) {
   const panel = document.getElementById("pl-run-rej-panel");
   if (!panel) return;
@@ -3383,22 +3478,27 @@ async function showRunCountPanel(runId, group, after, before) {
       if (raw.length === 0 && storedErrors > 0) {
         if (_plRunPanelKey !== key) return;
         const closeBtn = `<button class="run-detail-close" onclick="${esc(closeJs)}">close</button>`;
+        const groups = parseRunnerErrorGroups(pr.error_message, storedErrors);
+        const groupsHtml = groups.map(g => `
+          <div style="margin:12px 0;padding:14px 16px;background:#fff8f6;border:1px solid #f2cfc7;border-radius:6px;">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+              <span class="ps-err-inline" style="padding:2px 8px;border-radius:4px;font-weight:600;font-size:12px;">${g.count} ${esc(g.type)} error${g.count === 1 ? "" : "s"}</span>
+              <span style="color:#666;font-size:12px;">${esc(fmtDateTimeLocal(pr.started_at))}</span>
+            </div>
+            ${g.snippet ? `<div style="font-weight:600;color:#c92a2a;margin-bottom:8px;font-family:monospace;font-size:13px;word-break:break-word;">${esc(g.snippet)}</div>` : ""}
+            <div style="font-size:13px;color:#444;line-height:1.5;">
+              ${g.description}
+            </div>
+          </div>
+        `).join("");
+
         panel.innerHTML = `
           <div class="psb-title">Run #${runId} — Errors (${storedErrors}) ${closeBtn}</div>
           <div class="psb-source-group">Runner-level errors (${storedErrors})</div>
-          <div style="margin:12px 0;padding:14px 16px;background:#fff8f6;border:1px solid #f2cfc7;border-radius:6px;">
-            <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-              <span class="ps-err-inline" style="padding:2px 8px;border-radius:4px;font-weight:600;font-size:12px;">${storedErrors} errors</span>
-              <span style="color:#666;font-size:12px;">${esc(fmtDateTimeLocal(pr.started_at))}</span>
-            </div>
-            <div style="font-weight:600;color:#c92a2a;margin-bottom:8px;font-family:monospace;font-size:13px;word-break:break-word;">
-              ${esc(pr.error_message || `${storedErrors} errors during processing`)}
-            </div>
-            <div style="font-size:13px;color:#444;line-height:1.5;">
-              These <strong>${storedErrors} queue items</strong> encountered runner-level failures during processing (e.g. network/API connection drops).<br><br>
-              To preserve retry queue semantics, transiently failed items are <em>not</em> stamped with error flags in <code>raw_scrape</code>. 
-              They remain in the pending queue (<code>processed = 0</code>) and are automatically picked up and re-attempted on subsequent runs.
-            </div>
+          ${groupsHtml}
+          <div style="margin-top:8px;font-size:12px;color:#666;line-height:1.4;">
+            To preserve retry queue semantics, transiently failed items are <em>not</em> stamped with error flags in <code>raw_scrape</code>. 
+            They remain in the pending queue or evaluation backlog and are automatically picked up and re-attempted on subsequent runs.
           </div>
         `;
         return;
@@ -3518,7 +3618,13 @@ async function loadPipelineRuns(page = 1) {
       const statusLabel = r.status === "token_limit" ? "token limit" : r.status;
       let statusText = esc(statusLabel);
       if (r.status === "completed" && err > 0) {
-        const errDetail = errType ? `${err} err · ${errType}` : `${err} err`;
+        let errDetail = errType ? `${err} err · ${errType}` : `${err} err`;
+        if (r.error_message) {
+          const parenMatch = r.error_message.match(/\(([^)]+)\)/);
+          if (parenMatch && (parenMatch[1].includes(",") || parenMatch[1].includes(" "))) {
+            errDetail = `${err} err · ${parenMatch[1].trim()}`;
+          }
+        }
         statusText = `${esc(statusLabel)} <span class="run-gate-note" title="${esc(r.error_message || `${err} error(s)`)}">(${esc(errDetail)})</span>`;
       } else if ((r.status === "failed" || r.status === "aborted" || r.status === "token_limit") && r.error_message) {
         statusText = `${esc(statusLabel)}: ${esc(r.error_message.split(" — ")[0].slice(0, 45))}`;
@@ -3811,10 +3917,16 @@ async function loadPipelineStatus() {
     if (opportunitiesByScope.out_of_scope) scopeParts.push(`${opportunitiesByScope.out_of_scope} out-of-scope`);
     const scopeStr = scopeParts.length ? ` (${scopeParts.join(", ")})` : "";
 
+    const prefilteredTotal = Object.values(prefilterPassedBySource).reduce((a, b) => a + b, 0);
+    const prefilteredBtn = prefilteredTotal > 0
+      ? `<button class="ps-breakdown-btn ps-done" onclick='showRejectedList("__all__","prefilter_passed")' title="Items that passed pre-filter and are awaiting evaluation"><strong>${prefilteredTotal}</strong></button>`
+      : `<strong>${prefilteredTotal}</strong>`;
+
     const infoEl = document.getElementById("pipeline-info");
     if (infoEl) {
       infoEl.innerHTML =
         `Unprocessed: <strong>${unprocessed}</strong> &nbsp;|&nbsp; ` +
+        `Pre-filtered: ${prefilteredBtn} &nbsp;|&nbsp; ` +
         `Processed: <strong>${processed}</strong> → <span class="ps-done">${extracted} extracted</span> &nbsp;|&nbsp; ` +
         `Errors: ${_psBtn(errored, "__all__", "error", "ps-err") || `<strong>${errored}</strong>`} &nbsp;|&nbsp; ` +
         `Opportunities: <strong>${opportunitiesTotal}</strong>${scopeStr}`;
@@ -3824,8 +3936,22 @@ async function loadPipelineStatus() {
 
     const badge = document.getElementById("pipeline-badge");
     if (badge) {
-      if (unprocessed > 0) { badge.textContent = `${unprocessed} pending`; badge.style.display = "inline-block"; }
-      else badge.style.display = "none";
+      const totalPending = unprocessed + prefilteredTotal;
+      if (totalPending > 0) {
+        if (prefilteredTotal > 0 && unprocessed > 0) {
+          badge.textContent = `${unprocessed} + ${prefilteredTotal} pending`;
+          badge.title = `${unprocessed} unprocessed, ${prefilteredTotal} pre-filtered awaiting evaluation`;
+        } else if (prefilteredTotal > 0) {
+          badge.textContent = `${prefilteredTotal} awaiting eval`;
+          badge.title = `${prefilteredTotal} pre-filtered items awaiting evaluation`;
+        } else {
+          badge.textContent = `${unprocessed} pending`;
+          badge.title = `${unprocessed} unprocessed items`;
+        }
+        badge.style.display = "inline-block";
+      } else {
+        badge.style.display = "none";
+      }
     }
   } catch (e) {
     const infoEl = document.getElementById("pipeline-info");

@@ -1,4 +1,4 @@
 // Thin canonical loader. The original SPA lives in app-core.js so optional
 // operational enhancements can be composed without duplicating the large app.
-import "./app-core.js?v=20260906b";
-import "./claude-ui.js?v=20260906b";
+import "./app-core.js?v=20260907a";
+import "./claude-ui.js?v=20260907a";
